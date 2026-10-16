@@ -96,9 +96,11 @@
  * of prose claim that has a machine-checkable form, and the 2026-10-09 audit of
  * `RISKS.md` showed what happens without it — the audit found a dozen wrong
  * citations in the entries, and a one-off sweep then found seven more that the
- * audit itself had just written. It reads 66 citations across the documents,
- * and `checkCitations()` states the three ways it resolves a path and the one
- * way that makes it permissive.
+ * audit itself had just written. It reads every `<path>:<line>` citation in the
+ * documents — the count is printed on every run rather than written down here,
+ * because it was written down here once, as 66, and had drifted to 68 without
+ * anything noticing — and `checkCitations()` states the three ways it resolves
+ * a path and the one way that makes it permissive.
  *
  * Every source read is a text file in this repository. No build, no network,
  * no environment. The one thing here that is not a single file read is the

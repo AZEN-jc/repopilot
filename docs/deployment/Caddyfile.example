@@ -23,7 +23,7 @@
 #   2. Build the UI:  pnpm --filter @repopilot/web build
 #      and point `root` at the resulting `apps/web/dist`.
 #   3. Make sure the API is NOT reachable from the internet directly — see the
-#      warning at the bottom. It is a rate-limit bypass, not just untidiness.
+#      warning at the bottom. It is a forged-IP surface, not just untidiness.
 #
 #   sudo cp Caddyfile.example /etc/caddy/Caddyfile
 #   sudo caddy validate --config /etc/caddy/Caddyfile
@@ -35,11 +35,19 @@ example.com {
 
     # `reverse_proxy` sets X-Forwarded-For itself, and appends to an existing
     # one rather than replacing it, which is the behaviour the API needs: its
-    # rate limiter keys on that header and `@fastify/rate-limit@10.3.0`
-    # compares its allowList against that key rather than against `req.ip`
-    # (`index.js:233`). Do not add `header_up -X-Forwarded-For` here; that
-    # would hand the API `req.ip = 127.0.0.1`, which is the allowListed
-    # address, and rate limiting would silently stop. See R-24.
+    # rate limiter reads the header only when the socket peer is a proxy named
+    # in `TRUSTED_PROXY_IPS`, and keys on the *right-most* entry — the one Caddy
+    # appended, i.e. the real client, not the left-most one the client claimed
+    # about itself.
+    #
+    # The default `TRUSTED_PROXY_IPS` is loopback, which is correct here
+    # because the `reverse_proxy` targets below are `127.0.0.1:4000`. Point
+    # them at a remote host or a container and you must set the variable to
+    # that address, or every client behind Caddy shares one 60/min bucket.
+    #
+    # Do not add `header_up -X-Forwarded-For`: without the header the API keys
+    # every request by this host's address, which is on its allow-list, so the
+    # limiter stops limiting. See R-24.
     #
     # `handle` blocks are mutually exclusive and evaluated in the order
     # written, so the API routes must come before the catch-all.
@@ -101,15 +109,18 @@ example.com {
 # =============================================================================
 # WARNING — the API must not be reachable from the internet.
 #
-# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify believes
-# `X-Forwarded-For`. Combined with the `allowList` behaviour described above,
-# an API a client can reach directly is an API whose rate limit any client can
-# skip by sending `X-Forwarded-For: 127.0.0.1`.
+# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify's `req.ip`
+# follows `X-Forwarded-For` from anyone. The rate limiter does not read
+# `req.ip` — it keys on the socket peer and trusts the header only from a proxy
+# named in `TRUSTED_PROXY_IPS` — so a directly reachable API is no longer a
+# rate-limit bypass. It is still a forged-IP surface: every log line that
+# reports a client address reports whatever that client typed.
 #
 #   * Bind it to loopback: `HOST=127.0.0.1`.
 #   * Do not open port 4000 in the firewall.
 #   * If you put a load balancer in front of Caddy, it must also set
-#     `X-Forwarded-For`, and it must append rather than replace.
+#     `X-Forwarded-For`, and it must append rather than replace — and its
+#     address must be in `TRUSTED_PROXY_IPS`, or its clients share one bucket.
 #
 # The MCP server is stdio-only in this release; there is no HTTP transport to
 # expose yet. That is a 0.2.0 feature.

@@ -13,6 +13,10 @@
  *   stage, and an API that is not published on every host interface
  * - Asserts the schema bootstrap runs before anything that queries the
  *   database, and is a job rather than a server
+ * - Asserts the API trusts the edge and nothing else: a pinned bridge subnet,
+ *   a pinned `web` address on it, and an `api` `TRUSTED_PROXY_IPS` naming that
+ *   same address. The three are one value written in three places, and a
+ *   divergence is silent — every caller ends up sharing one rate-limit bucket
  * - Asserts `deploy/nginx/repopilot.conf` routes what the `web` service
  *   promises, that every `include` in it has a file behind it, and that the
  *   Dockerfile copies both into the image
@@ -172,14 +176,13 @@ for (const name of ['api', 'worker']) {
 
 // Nothing except the edge may be published on every host interface.
 //
-// `trustProxy: true` (`apps/api/src/server.ts`) makes Fastify believe
-// `X-Forwarded-For`, and `@fastify/rate-limit` compares its `allowList`
-// against the key that the `keyGenerator` produced — not against `req.ip`
-// (`@fastify/rate-limit@10.3.0/index.js:233` is
-// `params.allowList.indexOf(key)`). The generator prefers
-// `X-Forwarded-For`. So a directly reachable API lets any client send
-// `X-Forwarded-For: 127.0.0.1`, match the loopback allowList, and skip the
-// limit entirely. R-24 records the same trap from the proxy side.
+// `trustProxy: true` (`apps/api/src/server.ts`) makes Fastify's `req.ip` follow
+// `X-Forwarded-For` from anyone. The rate limiter is no longer among the things
+// that can be fooled by that — it keys on the socket peer and reads the header
+// only from a peer named in `TRUSTED_PROXY_IPS` (`middleware/rate-limit.ts`) —
+// so a published API is not a rate-limit bypass. It is still a forged-IP
+// surface for anything that reports a client address, and the edge is the only
+// thing supposed to see this traffic. R-24 records the whole history.
 for (const [name, svc] of Object.entries(services)) {
   if (name === 'web') continue;
   const ports = (svc['ports'] ?? []) as Array<string | Record<string, unknown>>;
@@ -200,6 +203,86 @@ for (const [name, svc] of Object.entries(services)) {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The API must believe exactly one proxy: the edge, at the address it has.
+// ---------------------------------------------------------------------------
+//
+// `web` reaches the API over the compose bridge, so the peer the API sees is
+// nginx's *container* address — never loopback. `TRUSTED_PROXY_IPS`'s built-in
+// default is loopback, which matches nothing there, so leaving the variable
+// unset is not "no proxy configured": it is "every caller is keyed by the
+// edge's address", one 60/min bucket for the whole internet. Not a bypass — an
+// outage that only appears under load, which is precisely why it needs a gate
+// rather than a comment.
+//
+// The address is pinned so that the trust list *can* name it: the default
+// network states its subnet, `web` states its address on that subnet, and `api`
+// names the same address. Three places, one value, and this is where they are
+// made to agree.
+const TRUSTED_PROXY_VAR = 'TRUSTED_PROXY_IPS';
+
+/**
+ * A value written as `${VAR:-fallback}` arrives here as that literal string,
+ * because this file reads the YAML as text rather than through Compose's
+ * interpolation. That is enough: what has to hold is that the *same* variable
+ * with the *same* fallback is written at both ends, and that is visible without
+ * resolving anything. Returns the literal, or null when the value is not a
+ * single interpolation — which is the thing being checked, not a detail.
+ */
+function singleInterpolation(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  return /^\$\{[A-Z0-9_]+:-[^}]*\}$/.test(s) ? s : null;
+}
+
+const networks = (parsed['networks'] ?? {}) as Record<string, unknown>;
+const defaultNetwork = (networks['default'] ?? {}) as Record<string, unknown>;
+const ipam = (defaultNetwork['ipam'] ?? {}) as Record<string, unknown>;
+const ipamConfig = (ipam['config'] ?? []) as Array<Record<string, unknown>>;
+if (!singleInterpolation(ipamConfig[0]?.['subnet'])) {
+  err(
+    'networks.default.ipam',
+    'the default network has no pinned subnet — Compose only honours a static `ipv4_address` on a network whose subnet the file states'
+  );
+}
+
+const webNetworks = (web?.['networks'] ?? {}) as Record<string, unknown>;
+const webDefaultNet = (webNetworks['default'] ?? {}) as Record<string, unknown>;
+const edgeIpRaw = webDefaultNet['ipv4_address'];
+const edgeIp = singleInterpolation(edgeIpRaw);
+if (!edgeIp) {
+  err(
+    'web.networks.default.ipv4_address',
+    `the edge has no pinned address, so \`api\`'s \`${TRUSTED_PROXY_VAR}\` cannot name it (got \`${String(edgeIpRaw ?? 'unset')}\`)`
+  );
+}
+
+const apiEnv = (api?.['environment'] ?? {}) as Record<string, unknown>;
+const trustedRaw = apiEnv[TRUSTED_PROXY_VAR];
+const trusted = singleInterpolation(trustedRaw);
+if (!trusted) {
+  err(
+    `api.environment.${TRUSTED_PROXY_VAR}`,
+    'unset, or not a single `${VAR:-default}` reference — the built-in default is loopback, which matches nothing on the bridge, so every caller would share one rate-limit bucket (R-24)'
+  );
+} else if (edgeIp && trusted !== edgeIp) {
+  err(
+    `api.environment.${TRUSTED_PROXY_VAR}`,
+    `is \`${trusted}\` while the edge is at \`${edgeIp}\` — the API would trust an address no client arrives from, and every caller would share one bucket (R-24)`
+  );
+}
+
+// `TRUSTED_PROXY_IPS` names an IPv4 literal, which is what a listener bound to
+// `0.0.0.0` reports as `req.socket.remoteAddress`. A dual-stack listener (`::`)
+// reports the same peer as `::ffff:<addr>`, which would not match — silently
+// producing the shared bucket this whole section exists to prevent.
+if (api && apiEnv['HOST'] !== '0.0.0.0') {
+  err(
+    'api.environment.HOST',
+    `expected 0.0.0.0 so the socket peer arrives as a plain IPv4 literal (got \`${String(apiEnv['HOST'] ?? 'unset')}\`)`
+  );
 }
 
 // ---------------------------------------------------------------------------

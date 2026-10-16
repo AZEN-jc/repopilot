@@ -27,7 +27,7 @@
 #      and point `root` at the resulting `apps/web/dist`.
 #   3. Issue a certificate (certbot --nginx -d example.com).
 #   4. Make sure the API is NOT reachable from the internet directly. See the
-#      warning at the bottom — it is a rate-limit bypass, not just untidiness.
+#      warning at the bottom — it is a forged-IP surface, not just untidiness.
 #
 #   sudo cp nginx.conf.example /etc/nginx/sites-available/repopilot.conf
 #   sudo ln -s /etc/nginx/sites-available/repopilot.conf /etc/nginx/sites-enabled/
@@ -125,14 +125,20 @@ server {
 
     # WARNING — X-Forwarded-For is load-bearing, not cosmetic.
     #
-    # The API's rate limiter keys on this header before falling back to the
-    # socket address, and `@fastify/rate-limit@10.3.0` compares its `allowList`
-    # against that key rather than against `req.ip` (`index.js:233`). The API
-    # allows `127.0.0.1` and `::1`.
+    # The API's rate limiter reads this header *only* when the socket peer is a
+    # proxy named in `TRUSTED_PROXY_IPS`, whose built-in default is loopback
+    # (`127.0.0.1,::1,::ffff:127.0.0.1`). That default covers this file's
+    # topology and nothing else: the `upstream` above points at
+    # `127.0.0.1:4000`, so the API's peer really is loopback. Change the
+    # upstream to a remote host or a container address and you must set
+    # `TRUSTED_PROXY_IPS` to that address, or every client behind this proxy is
+    # keyed by the proxy and shares one bucket — 60/min for the whole service
+    # rather than per caller.
     #
-    # So a proxy that forwards without this header hands the API
-    # `req.ip = 127.0.0.1` — precisely the allowListed address — and rate
-    # limiting is silently disabled for the whole deployment. See R-24.
+    # Dropping the header is the same failure reached from the other side: the
+    # API keys every request by the proxy's address, which is on its allow-list,
+    # so the limiter stops limiting. Neither direction is a bypass; both are the
+    # limiter quietly not doing per-client accounting. See R-24.
     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Real-IP         $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -198,13 +204,17 @@ server {
 # =============================================================================
 # WARNING — the API must not be reachable from the internet.
 #
-# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify believes
-# `X-Forwarded-For`. Combined with the `allowList` behaviour described above,
-# an API a client can reach directly is an API whose rate limit any client can
-# skip by sending `X-Forwarded-For: 127.0.0.1`.
+# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify's `req.ip`
+# follows `X-Forwarded-For` from anyone. The rate limiter does not read
+# `req.ip` — it keys on the socket peer and trusts the header only from a proxy
+# named in `TRUSTED_PROXY_IPS` — so a directly reachable API is no longer a
+# rate-limit bypass. It is still a forged-IP surface: every log line that
+# reports a client address reports whatever that client typed.
 #
 #   * Bind it to loopback: `HOST=127.0.0.1`.
 #   * Do not open port 4000 in the firewall.
 #   * If you front it with a second proxy or a load balancer, that proxy must
-#     also set `X-Forwarded-For`, and it must append rather than replace.
+#     also set `X-Forwarded-For`, and it must append rather than replace — and
+#     its address must be in `TRUSTED_PROXY_IPS`, or its clients share one
+#     bucket.
 # =============================================================================

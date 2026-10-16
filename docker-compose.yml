@@ -67,22 +67,32 @@ services:
       OKX_PAYMENT_RESOURCE_URL: ${OKX_PAYMENT_RESOURCE_URL:-}
       PRICE_AUDIT: ${PRICE_AUDIT:-1}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      # Which peer's `X-Forwarded-For` the API believes. `web` is the only
+      # thing that talks to the API, and it does so over the compose network —
+      # so the peer this process sees is nginx's *container* address, never
+      # loopback. The variable's built-in default is loopback, which matches
+      # nothing here: leaving it unset is not "no proxy configured", it is
+      # "every caller is keyed by the edge's address", i.e. one 60/min bucket
+      # shared by the whole internet. Not a bypass — an outage that only shows
+      # up under load.
+      #
+      # The address is pinned in `web.networks` below rather than left to
+      # Docker, so the two cannot drift; `compose:check` fails if they do.
+      TRUSTED_PROXY_IPS: ${REPOPILOT_EDGE_IP:-172.28.0.10}
     ports:
       # Loopback only, deliberately. The public entry point is the `web`
       # service; this mapping exists so an operator can still run
-      # `curl http://127.0.0.1:4000/health` on the host. Publishing the API on
-      # every interface would defeat two things:
+      # `curl http://127.0.0.1:4000/health` on the host.
       #
-      #   1. `trustProxy: true` (`server.ts`) makes Fastify believe
-      #      `X-Forwarded-For`. A client that can reach the API directly can
-      #      therefore send `X-Forwarded-For: 127.0.0.1` and be matched against
-      #      the rate limiter's `allowList` — a full bypass.
-      #   2. `@fastify/rate-limit` compares `allowList` against the key the
-      #      `keyGenerator` produced, not against `req.ip`
-      #      (`index.js:233`), and the key prefers `X-Forwarded-For`. Traffic
-      #      that skips the edge is traffic the edge's accounting never sees.
-      #
-      # R-24 records the same trap from the proxy side.
+      # Publishing the API on every interface would make it a second, unchecked
+      # entry point. `trustProxy: true` (`server.ts`) still makes `req.ip`
+      # follow `X-Forwarded-For` from anyone, so a direct client can forge the
+      # address that every log line reports. The rate limiter is no longer
+      # among the things that would be fooled — it keys on the socket peer and
+      # reads the header only from a peer in `TRUSTED_PROXY_IPS`
+      # (`middleware/rate-limit.ts`, R-24) — but the edge is the only place
+      # supposed to see this traffic, and a loopback binding is what makes that
+      # true rather than merely intended.
       - "127.0.0.1:4000:4000"
     depends_on:
       db:
@@ -113,6 +123,14 @@ services:
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-8080}:80"
+    networks:
+      default:
+        # Pinned so that `api`'s `TRUSTED_PROXY_IPS` can name a stable address
+        # instead of one Docker would otherwise choose per `up`. The same
+        # `${REPOPILOT_EDGE_IP:-...}` is written in both places on purpose:
+        # one variable, one fallback, and `compose:check` asserts they still
+        # agree. See the `networks:` block at the bottom of this file.
+        ipv4_address: ${REPOPILOT_EDGE_IP:-172.28.0.10}
     depends_on:
       api:
         condition: service_healthy
@@ -174,6 +192,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+networks:
+  # The compose bridge, with its subnet pinned.
+  #
+  # Pinning is not a preference: it is what makes the static `ipv4_address` on
+  # `web` legal. Compose refuses to honour one on a network whose subnet it
+  # would otherwise pick itself, because that range is not known until `up`.
+  #
+  # Override both together if 172.28.0.0/24 is already taken on the host —
+  # `REPOPILOT_NET_SUBNET` and `REPOPILOT_EDGE_IP` — keeping the address inside
+  # the subnet. A collision fails loudly at `up`, not silently at runtime.
+  default:
+    ipam:
+      config:
+        - subnet: ${REPOPILOT_NET_SUBNET:-172.28.0.0/24}
 
 volumes:
   repopilot-db:

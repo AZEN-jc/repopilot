@@ -103,4 +103,30 @@ describe('registerRateLimit key selection', () => {
       expect((await get('10.0.0.1')).statusCode).toBe(200);
     }
   });
+
+  it('separates callers behind the compose edge, and collapses them without it', async () => {
+    // The shipped topology, at the address it actually uses. `web` proxies to
+    // `api:4000` over the compose bridge, so the peer the API sees is nginx's
+    // *container* address — `172.28.0.10`, which `docker-compose.yml` pins and
+    // names in `TRUSTED_PROXY_IPS`. Loopback never appears. This is the half
+    // that makes the variable load-bearing: with the address named, each caller
+    // spends its own budget.
+    app = await buildApp({ perMinute: 1, trustedProxyIps: ['172.28.0.10'] });
+    const via = (client: string) => get('172.28.0.10', { 'x-forwarded-for': client });
+    expect((await via('198.51.100.10')).statusCode).toBe(200);
+    expect((await via('198.51.100.11')).statusCode).toBe(200);
+    expect((await via('198.51.100.10')).statusCode).toBe(429);
+
+    // The other half, and the reason `compose:check` gates the wiring: the
+    // same two callers against the same peer, with the built-in loopback
+    // default — i.e. an edge address the API was never told about. Both land
+    // in one bucket. Not a bypass; a shared 60/min for the whole internet,
+    // which only shows up under load.
+    //
+    // `afterEach` only closes the last instance, so this one is closed here.
+    await app.close();
+    app = await buildApp({ perMinute: 1 });
+    expect((await via('198.51.100.10')).statusCode).toBe(200);
+    expect((await via('198.51.100.11')).statusCode).toBe(429);
+  });
 });

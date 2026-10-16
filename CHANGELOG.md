@@ -18,13 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`checkCitations()` — every `path:line` a document cites must point at
   something.** A citation is the one kind of prose claim that has a
-  machine-checkable form, so `pnpm docs:check` now asserts two things about all
-  66 of them: the path resolves to a file in the tree, and the line exists in
-  that file. It resolves generously rather than demanding full paths — the
-  repository root, or a directory source lives in, or a basename — because a
-  check that demands a rewrite of correct prose is a check that gets an
-  exception carved into it, and the count resolved by the last two is printed on
-  every run, since that is the one direction in which the check can be
+  machine-checkable form, so `pnpm docs:check` now asserts two things about
+  every one of them: the path resolves to a file in the tree, and the line
+  exists in that file. It resolves generously rather than demanding full paths
+  — the repository root, or a directory source lives in, or a basename —
+  because a check that demands a rewrite of correct prose is a check that gets
+  an exception carved into it, and the count resolved by the last two is
+  printed on every run, since that is the one direction in which the check can be
   permissive. It exists because the audit recorded below found a dozen wrong
   citations in `RISKS.md`, and the one-off sweep that followed found seven more
   that the audit had just written: reading is not a gate. The section is 299
@@ -1511,9 +1511,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged in meaning and unreachable by writing a header. Five tests
   drive the real plugin through `app.inject` with a faked socket peer.
   **Operational note:** deployments behind nginx or Caddy must set
-  `TRUSTED_PROXY_IPS` to the proxy's address (loopback in the shipped
-  compose topology), or every client is keyed by the proxy and shares one
-  bucket. `.env.example` documents the variable and the caveat. (R-24.)
+  `TRUSTED_PROXY_IPS` to the proxy's address, or every client is keyed by
+  the proxy and shares one bucket. `.env.example` documents the variable and
+  the caveat. This entry originally read "(loopback in the shipped compose
+  topology)" at that point, which was false and left the deployment with no
+  per-caller limiting at all — corrected by the entry below, written the same
+  day. (R-24.)
 - **Files whose content could not be read were dropped from the audit
   silently.** Both content paths — `filterFiles` recording a file in
   `skipped` for being over a size or byte cap, and `extractTarball`
@@ -1538,6 +1541,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `complete` distinguishes a stopped scan from a fully-read history
   regardless of how many commits it managed. Pinned by a builder test
   that feeds the stopped-scan shape through the limitation builder.
+- **The rate-limit fix above left the shipped compose stack with one bucket
+  for the whole internet.** Adding `TRUSTED_PROXY_IPS` and then not setting
+  it for the deployment the repository actually ships is a fix in the shape
+  of the defect. The reasoning was that the compose stack talks over
+  loopback; it does not. `web` proxies to `upstream repopilot_api { server
+  api:4000; }` over the compose bridge, so the API's peer is nginx's
+  *container* address, and the variable's loopback default matched nothing —
+  which is the opposite of the exempt case. The peer was untrusted, so the
+  key was the edge's address for every request, and every caller shared one
+  60/min bucket. Measured, because the assumption and the measurement differ
+  by exactly the thing that was assumed: a three-container probe of the real
+  topology reports `PEER=172.28.0.10`, and the same probe with the pinning
+  removed reports `PEER=172.21.0.3` on a daemon-chosen `172.21.0.0/16` —
+  never loopback either way, and not an address a trust list can name in
+  advance. So the address is pinned rather than assumed: the default network
+  states its subnet (`REPOPILOT_NET_SUBNET`), `web` states its address on it
+  (`REPOPILOT_EDGE_IP`), and `api`'s `TRUSTED_PROXY_IPS` names the same
+  literal. `pnpm compose:check` fails if the three disagree, if the subnet
+  stops being pinned, or if `api`'s `HOST` stops being `0.0.0.0` — a
+  dual-stack listener reports the peer as `::ffff:<addr>`, which would not
+  match and would reproduce the shared bucket silently. Seven mutations of
+  `docker-compose.yml`, one per way to break the wiring, each exit 1.
+  `rate-limit.test.ts` pins both directions: the edge address named gives
+  two callers two buckets, the built-in default collapses them into one.
+  Six files carried the old claim and all six were rewritten —
+  `deploy/nginx/repopilot.conf`, both `docs/deployment/*.example` templates,
+  `docker-compose.yml`, `scripts/compose-check.ts` and `docs/DEPLOYMENT.md`
+  — because a comment that describes the pre-fix mechanism is how the next
+  person reintroduces it. (R-24.)
 
 ### Fixed
 

@@ -253,6 +253,9 @@ the production default:
 
 `web` is the only service that publishes a public port. `api` binds to
 loopback on purpose: it runs with `trustProxy: true`, so anything that can
-reach it directly can forge the header its rate limiter keys on (R-24).
+reach it directly can forge the client address it reports. The rate limiter is
+no longer among the things that can be fooled — it keys on the socket peer and
+reads `X-Forwarded-For` only from a peer named in `TRUSTED_PROXY_IPS`, which
+compose pins to `web`'s address on the bridge (R-24).
 A reverse proxy (nginx or Caddy) terminates HTTPS in front of `web`. See
 `docs/DEPLOYMENT.md` for the templates.

@@ -231,6 +231,15 @@ Nothing to do: the `web` service *is* the reverse proxy. Point your DNS at the
 host and put TLS in front of it, or terminate TLS in the `web` container by
 mounting a certificate and extending `deploy/nginx/repopilot.conf`.
 
+One thing is worth knowing about this shape. The edge reaches the API over the
+compose bridge network, not over loopback, so the peer the API sees is nginx's
+*container* address — `172.28.0.10` by default. `api`'s `TRUSTED_PROXY_IPS` names
+that address, and `web.networks.default.ipv4_address` pins it, because a value
+Docker chooses per `up` is not one a trust list can name. If you change the
+subnet, set both `REPOPILOT_NET_SUBNET` and `REPOPILOT_EDGE_IP` together and keep
+the address inside the subnet. `pnpm compose:check` fails if the two ever
+disagree; the failure it prevents is every caller sharing one rate-limit bucket.
+
 ### nginx or Caddy on the host
 
 Use `docs/deployment/nginx.conf.example` or
@@ -248,9 +257,11 @@ server {
   root /opt/repopilot/apps/web/dist;
   index index.html;
 
-  # Load-bearing: the API's rate limiter keys on this header, and matches its
-  # allowList against that key rather than against req.ip. Without it the API
-  # sees 127.0.0.1 — the allowListed address — and rate limiting stops. R-24.
+  # Load-bearing: the API's rate limiter reads this header only when the socket
+  # peer is a proxy named in TRUSTED_PROXY_IPS, and it keys on the right-most
+  # entry — the one nginx appended. Without it the API keys every request by the
+  # proxy's own address, which is on its allow-list, so the limiter stops
+  # limiting. R-24.
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
   location /api/  { proxy_pass http://repopilot_api; }
@@ -260,11 +271,21 @@ server {
 }
 ```
 
+> **Set `TRUSTED_PROXY_IPS` to your proxy's address.** Its built-in default is
+> loopback, which is correct for this topology (`upstream` above is
+> `127.0.0.1:4000`) and for nothing else. Name an address the API never sees and
+> the variable stops meaning "no proxy configured" and starts meaning "every
+> caller is keyed by the proxy": one 60/min bucket for the whole service, an
+> outage that only appears under load. Name the *wrong* address and the header
+> is ignored entirely, which is the same outcome.
+
 > **The API must not be reachable from the internet.** `apps/api/src/server.ts`
-> sets `trustProxy: true`, so Fastify believes `X-Forwarded-For` from anyone.
-> A directly reachable API is one whose rate limit any client can skip by
-> sending `X-Forwarded-For: 127.0.0.1`. Bind it to loopback (`HOST=127.0.0.1`)
-> and do not open port 4000 in the firewall. See R-24.
+> sets `trustProxy: true`, so Fastify's `req.ip` follows `X-Forwarded-For` from
+> anyone. The rate limiter does not read `req.ip` — it keys on the socket peer —
+> so a directly reachable API is no longer a rate-limit bypass, but it is still
+> a forged-IP surface for anything that reports a client address. Bind it to
+> loopback (`HOST=127.0.0.1`) and do not open port 4000 in the firewall. See
+> R-24.
 
 Caddy needs no certificate step: `reverse_proxy` sets `X-Forwarded-For` itself,
 appending rather than replacing, which is the behaviour the API needs.

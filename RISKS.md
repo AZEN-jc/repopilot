@@ -798,10 +798,12 @@ count should read `Report.securityFindings`, not the diff.
 
 **Severity:** High.
 **Status:** **Fixed 2026-10-16 — the key is the socket peer, not `req.ip`,
-and the allow-list is no longer reachable by writing a header.** One
-residual remains, below: a *trusted* proxy that omits the header still
-exempts itself, which is what the shipped configurations exist to
-prevent.
+and the allow-list is no longer reachable by writing a header.** Three
+things remain, all of them below: a *trusted* proxy that omits the header
+still exempts itself; the shipped compose stack named loopback while its
+edge arrived over the bridge, which was a live shared-bucket outage until a
+second pass the same day pinned the address; and `trustProxy: true` still
+makes `req.ip` follow the header for anything that reads it.
 
 The `keyGenerator` used to read the header first and `req.ip` as a
 fallback, and the `allowList` was matched against the **key**, not
@@ -851,6 +853,47 @@ re-published on every host interface. A deployment behind nginx or Caddy
 must set `TRUSTED_PROXY_IPS` to the proxy's address, or every client is
 keyed by the proxy and shares one bucket — documented in `.env.example`
 with that caveat.
+
+**The first pass shipped a hole of the same shape, and a second pass closed
+it.** The fix above added `TRUSTED_PROXY_IPS` and then left the shipped
+compose stack unset, reasoning that loopback is what that stack uses. It is
+not. `web` proxies to `upstream repopilot_api { server api:4000; }` over the
+compose bridge, so the API's peer is nginx's *container* address, and the
+loopback default matched nothing — which is not the exempt case but the
+opposite one. The peer was untrusted, so the key was the edge's address, and
+**every caller of the deployment shared one 60/min bucket.**
+
+Measured rather than reasoned, because the two readings differ by exactly
+the thing that was assumed: a three-container probe of the real topology
+(`node` sink bound to `0.0.0.0:4000` behind the `nginx:1.30-alpine` image,
+on the repository's own subnet and address) reports `PEER=172.28.0.10`, and
+the same probe with the pinning removed reports `PEER=172.21.0.3` on a
+daemon-chosen `172.21.0.0/16`. The peer is a bridge address either way —
+never loopback — and without the pin it is one no trust list can name in
+advance. That is the whole reason the address is now pinned rather than
+assumed: the default network states its subnet, `web` states its address on
+that subnet (`web.networks.default.ipv4_address`), and `api`'s
+`TRUSTED_PROXY_IPS` names the same `${REPOPILOT_EDGE_IP:-172.28.0.10}`
+literal.
+
+`scripts/compose-check.ts` now fails if those three disagree, if the subnet
+stops being pinned, or if `api`'s `HOST` stops being `0.0.0.0` — a
+dual-stack listener reports the same peer as `::ffff:<addr>`, which would
+not match and would reproduce the shared bucket silently. Seven mutations of
+`docker-compose.yml`, one per way to break the wiring, each exit 1 with the
+message it is designed to produce.
+`apps/api/src/middleware/rate-limit.test.ts` pins both directions of the
+mechanism: with the edge's address named, two callers get two buckets; with
+the built-in default, the same two collapse into one.
+
+**A third thing, recorded rather than fixed.** `apps/api/src/server.ts`
+still sets `trustProxy: true`, so `req.ip` follows `X-Forwarded-For` from
+anyone. Nothing reads `req.ip` today — the limiter keys on the socket peer —
+so this is a loaded gun rather than a wound, and the API's loopback-only
+published port is what keeps it unloaded. Setting `trustProxy` to
+`cfg.TRUSTED_PROXY_IPS` would make `req.ip` agree with the limiter and was
+not done, because it changes the behaviour of a value no code path reads:
+the next reader of `req.ip` is the one who should decide.
 
 **Why it is High rather than Low.** R-03 is the reason the limiter exists at
 all: anonymous GitHub access is 60 requests/hour per IP, and the four free
