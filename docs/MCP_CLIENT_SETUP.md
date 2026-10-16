@@ -101,7 +101,7 @@ and the manifest is `private: true`. Running it means running it from a
 checkout:
 
 ```bash
-git clone https://github.com/azen07508-debug/repopilot.git
+git clone https://github.com/AZEN-jc/repopilot.git
 cd repopilot
 pnpm install
 pnpm --filter "./packages/*" build

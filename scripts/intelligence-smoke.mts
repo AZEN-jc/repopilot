@@ -48,7 +48,7 @@ import {
 
 const DEFAULT_REPOS = [
   'https://github.com/octocat/Hello-World',
-  'https://github.com/azen07508-debug/repopilot',
+  'https://github.com/AZEN-jc/repopilot',
 ];
 
 const ALLOWED_HOSTS = ['github.com', 'raw.githubusercontent.com'];

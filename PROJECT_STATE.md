@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 **Project:** RepoPilot — GitHub Repository Launch-Readiness Audit
-**Repository:** https://github.com/azen07508-debug/repopilot
+**Repository:** https://github.com/AZEN-jc/repopilot
 **Current version:** 0.1.0-rc.3
 **Current stage:** Release Candidate preparation
 **Last updated:** 2026-10-09 13:17 UTC

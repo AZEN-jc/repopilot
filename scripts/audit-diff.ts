@@ -60,7 +60,7 @@ const AUDITS: AuditSpec[] = [
   { label: 'octocat/Hello-World quick', url: 'https://github.com/octocat/Hello-World', mode: 'quick' },
   { label: 'octocat/Hello-World full', url: 'https://github.com/octocat/Hello-World', mode: 'full' },
   { label: 'pinojs/pino full', url: 'https://github.com/pinojs/pino', mode: 'full' },
-  { label: 'self (repopilot) full', url: 'https://github.com/azen07508-debug/repopilot', mode: 'full' },
+  { label: 'self (repopilot) full', url: 'https://github.com/AZEN-jc/repopilot', mode: 'full' },
 ];
 
 interface Metrics {

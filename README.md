@@ -1,7 +1,7 @@
 # RepoPilot
 
-[![CI](https://github.com/azen07508-debug/repopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/azen07508-debug/repopilot/actions/workflows/ci.yml)
-[![Docker](https://github.com/azen07508-debug/repopilot/actions/workflows/docker.yml/badge.svg)](https://github.com/azen07508-debug/repopilot/actions/workflows/docker.yml)
+[![CI](https://github.com/AZEN-jc/repopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/AZEN-jc/repopilot/actions/workflows/ci.yml)
+[![Docker](https://github.com/AZEN-jc/repopilot/actions/workflows/docker.yml/badge.svg)](https://github.com/AZEN-jc/repopilot/actions/workflows/docker.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **One repo in. A ship-or-block verdict out.**
@@ -110,7 +110,7 @@ MCP that is `quality_status`; over HTTP it is
 is the default, and Postgres is opt-in.
 
 ```bash
-git clone https://github.com/azen07508-debug/repopilot.git
+git clone https://github.com/AZEN-jc/repopilot.git
 cd repopilot
 pnpm install
 cp .env.example .env
