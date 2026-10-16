@@ -195,12 +195,48 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
         if (byPayment) job = byPayment;
       }
     }
-    // Existing job short-circuits:
+    // Existing job short-circuits — but only with proof of payment.
+    //
+    // An idempotency key is chosen by the client and binds to nothing: it is
+    // not an identity, and knowing one is not evidence of having paid for the
+    // job it names. The `X-PAYMENT` header is the only credential this flow
+    // issues, so it is the one that gates this path — `readPaymentId` parses
+    // it through the adapter, so a header that does not name *this* job's
+    // payment is a request to pay for it, not a request to read it. (R-46.)
     if (job && job.status === 'completed' && job.report) {
-      return reply.send({
+      if (xPayment && adapter.readPaymentId(xPayment) === job.paymentId) {
+        return reply.send({
+          jobId: job.jobId,
+          status: 'completed',
+          report: ReportSchema.parse(job.report),
+        });
+      }
+      // No proof. Re-quote the job the key named rather than creating a second
+      // one under the same key (which the unique index would refuse) and
+      // rather than discarding the key (which would silently change what the
+      // caller asked for). The challenge is attached to the completed row on
+      // purpose: the next POST with its X-PAYMENT matches `job.paymentId`
+      // and delivers the report, so a buyer who pays this challenge gets an
+      // answer instead of a 402 loop. The row's status is reported truthfully
+      // — it is completed; what the caller has not shown is payment for it.
+      const price = priceFor(deps.payment);
+      const challenge = await adapter.createChallenge({ quote: { ...price, mode: input.mode } });
+      await deps.service.attachPayment(job, challenge.paymentId);
+      return reply.status(402).send({
         jobId: job.jobId,
-        status: 'completed',
-        report: ReportSchema.parse(job.report),
+        status: job.status,
+        payment: {
+          paymentId: challenge.paymentId,
+          mode: deps.payment.mode,
+          amount: price.amount,
+          currency: price.currency,
+          challenge: challenge.challenge,
+          expiresAt: challenge.expiresAt,
+        },
+        nextAction:
+          deps.payment.mode === 'mock'
+            ? `Replay this POST with header X-PAYMENT: mock:${challenge.paymentId}`
+            : 'Sign with onchainos payment pay --payment-id <id> --yes, then replay with X-PAYMENT: <base64 envelope>',
       });
     }
     // For `queued` / `processing` jobs we do NOT short-circuit if the
@@ -297,17 +333,21 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
     // job re-delivered hours later is keyed on the commit that is
     // current then. This value is the one the caller was quoted, and it
     // is what the derived views report.
+    // Resolve the head SHA through the repository's default branch.
     //
-    // Null when GitHub could not be reached — not the string 'unknown'.
-    // The column is nullable and the derived views report it verbatim, so
-    // a sentinel would read as a real SHA to any client consuming them.
-    const headSha =
-      (await deps.metadataAnalyzer
-        .getHeadSha(parsedRepo.owner, parsedRepo.repo, 'main')
-        .catch(() => null)) ??
-      (await deps.metadataAnalyzer
-        .getHeadSha(parsedRepo.owner, parsedRepo.repo, 'master')
-        .catch(() => null));
+    // This used to try `main`, then `master`. Both are conventions, not
+    // guarantees, so a repository defaulted to `develop`, `trunk` or `v1`
+    // recorded `null` here while the worker's own cache key collapsed onto a
+    // constant — see `AuditWorker.executeWithCache`. One resolution, one
+    // meaning: `null` means GitHub could not be reached, and is not
+    // interchangeable with a sentinel string, because the column is nullable
+    // and the derived views report it verbatim.
+    const branch = await deps.metadataAnalyzer.getDefaultBranch(parsedRepo.owner, parsedRepo.repo);
+    const headSha = branch
+      ? await deps.metadataAnalyzer
+          .getHeadSha(parsedRepo.owner, parsedRepo.repo, branch)
+          .catch(() => null)
+      : null;
     await deps.service.setCommitSha(job, headSha);
 
     // Enqueue. If the queue is shutting down, fail the job and tell

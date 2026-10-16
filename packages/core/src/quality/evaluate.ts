@@ -299,6 +299,13 @@ function releaseSection(findings: Finding[], c: QualityContract): ContractSectio
  * found" is a weaker statement than it appears. That is a warning rather
  * than a failure: the project is not at fault, the analysis is partial.
  * Silently reporting `pass` here would be the dishonest option.
+ *
+ * Two limitations match, and they are different failures with the same
+ * consequence: the tree *listing* was cut short, or every wanted path was
+ * known and some still could not be read (over a size or byte cap, or
+ * absent from the archive). The observed line says both because a reader
+ * cannot tell which from here, and either way the answer is "not
+ * everything was read".
  */
 function coverageSection(report: Report): ContractSection {
   const partial = report.limitations.some((l) => /truncat/i.test(l));
@@ -308,7 +315,9 @@ function coverageSection(report: Report): ContractSection {
           id: 'coverage.partial-tree',
           section: 'coverage',
           requirement: 'the whole repository tree was analysed',
-          observed: 'the listing was truncated, so some files were not read',
+          observed:
+            'part of the repository was not read: the tree listing was truncated, ' +
+            'or files were dropped by a size or byte cap',
           status: 'warn',
           ruleIds: [],
         },

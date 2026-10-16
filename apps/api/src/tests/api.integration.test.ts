@@ -33,6 +33,9 @@ class FakeMetadataAnalyzer {
    */
   sha: string | null = HEAD_SHA;
 
+  async getDefaultBranch(): Promise<string | null> {
+    return 'main';
+  }
   async getHeadSha(): Promise<string | null> {
     return this.sha;
   }
@@ -379,6 +382,74 @@ describe('API integration', () => {
     expect(body!.status).toBe('completed');
     expect(body!.report!.scores.overall).toBe(90);
     expect(body!.report!.repository.name).toBe('repopilot');
+  });
+
+  it('does not re-serve a completed job to a caller who has not paid for it', async () => {
+    // The Idempotency-Key path used to short-circuit on a completed row
+    // *before* payment verification: pay once under a key, re-post the same
+    // key with no X-PAYMENT header, and the report came back for free. The
+    // key is client-chosen and binds to nothing, so it is not evidence of
+    // payment — the X-PAYMENT header is the only credential this flow
+    // issues, and it is the one that gates this path.
+    const repoUrl = 'https://github.com/okx/repopilot';
+    // Unique per run: the integration database is a file on disk that
+    // outlives the process, and an idempotency key is the one piece of
+    // job identity a client chooses. A fixed key would find the previous
+    // run's completed row and take the wrong branch on the first POST.
+    const key = `free-report-gate-${Date.now()}`;
+
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(create.statusCode).toBe(402);
+    const { jobId, payment } = create.json() as { jobId: string; payment: { paymentId: string } };
+
+    const paid = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key, 'x-payment': `mock:${payment.paymentId}` },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(paid.statusCode).toBe(202);
+
+    let completed = false;
+    for (let i = 0; i < 50; i++) {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}` });
+      const got = res.json() as { status: string };
+      if (res.statusCode === 200 && got.status === 'completed') {
+        completed = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(completed).toBe(true);
+
+    // The payer re-reads their own report: same key, same payment header.
+    const payerReads = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key, 'x-payment': `mock:${payment.paymentId}` },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(payerReads.statusCode).toBe(200);
+    expect(payerReads.json()).toMatchObject({ jobId, status: 'completed' });
+
+    // The exploit: same key, no payment. Before the fix this returned the
+    // report. Now it returns a challenge naming a *different* payment —
+    // paying that challenge is what a replay would have to present.
+    const free = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(free.statusCode).toBe(402);
+    const freeBody = free.json() as { jobId: string; status: string; payment: { paymentId: string } };
+    expect(freeBody.jobId).toBe(jobId);
+    expect(freeBody.payment.paymentId).not.toBe(payment.paymentId);
   });
 
   it('GET /api/v1/audits/:jobId returns the stored job', async () => {

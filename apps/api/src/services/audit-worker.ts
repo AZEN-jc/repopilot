@@ -98,6 +98,18 @@ export interface AuditWorkerDeps {
    * `JOB_TIMEOUT`. `AUDIT_QUEUE_JOB_TIMEOUT_MS`.
    */
   jobTimeoutMs: number;
+  /**
+   * How long a row may sit in `processing` before another worker treats it as
+   * abandoned and takes it over. Set from the queue's own redelivery bound
+   * (`PgBossAuditQueue`'s `expireInSeconds`), so the reclaim never races the
+   * expiry that is supposed to free the job in the first place.
+   *
+   * Without it a worker that dies mid-attempt parks the row in `processing`
+   * for good: `runOnce` skips a row it finds there, and the redelivery that
+   * arrives afterwards is therefore dropped on the floor. The buyer has paid
+   * and polls a 202 forever. (R-44.)
+   */
+  staleProcessingMs: number;
   log?: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
 }
 
@@ -120,7 +132,7 @@ export class AuditWorker {
    */
   async runOnce(jobId: string): Promise<void> {
     const log = this.deps.log ?? { info: () => undefined, warn: () => undefined, error: () => undefined };
-    const job = await this.deps.repo.findById(jobId);
+    let job = await this.deps.repo.findById(jobId);
     if (!job) {
       log.warn({ jobId }, 'audit job not found; skipping');
       return;
@@ -134,16 +146,46 @@ export class AuditWorker {
       return;
     }
     if (job.status === 'processing') {
-      // Another worker is already running this. Don't double-run.
+      // Another worker may be running this — or the last one may have died
+      // holding it. `startedAt` is the only thing that tells the two apart.
       //
-      // This is only a safe reading because a *retryable* failure no longer
-      // parks the row here: a redelivery that arrived to find its own previous
-      // attempt's leftovers was treated as someone else's work and dropped
-      // (R-43). `processing` now means what it says. A worker that dies
-      // mid-attempt still leaves the row here for good — there is no sweep —
-      // which is R-42's territory, not this guard's.
-      log.warn({ jobId }, 'audit job already processing elsewhere; skipping');
-      return;
+      // A row parked in `processing` is otherwise a dead end: the guard below
+      // treats it as "someone else has it", so the redelivery that was
+      // supposed to follow the crash is dropped and the job polls 202 forever
+      // (R-44). Reclaiming it costs one guarded write and cannot double-run:
+      // if a live worker is mid-attempt it is younger than this bound by
+      // definition — the bound is the queue's redelivery window, which is
+      // longer than one attempt may take.
+      const startedAt = job.startedAt ? Date.parse(job.startedAt) : Number.NaN;
+      const ageMs = Number.isFinite(startedAt) ? Date.now() - startedAt : Number.POSITIVE_INFINITY;
+      if (ageMs <= this.deps.staleProcessingMs) {
+        log.warn({ jobId }, 'audit job already processing elsewhere; skipping');
+        return;
+      }
+      log.warn({ jobId, ageMs }, 'audit job stuck in processing; reclaiming');
+      const reclaimed = await this.deps.repo.update(
+        jobId,
+        {
+          status: 'queued',
+          errorCode: 'JOB_TIMEOUT',
+          error: `previous attempt did not finish within ${this.deps.staleProcessingMs}ms; reclaimed`,
+        },
+        'processing',
+      );
+      if (!reclaimed.updated) {
+        // Someone else got there first — a live worker claiming it, or
+        // another reclaim winning the race. Either way, not ours.
+        log.info({ jobId }, 'audit job claim lost; skipping');
+        return;
+      }
+      // Fall through: the row is `queued` now and the guarded take below is
+      // the normal claim path. Re-read it first — the attempt count has to
+      // come from the row we just reclaimed, not from the object loaded at
+      // the top of this call. The crashed attempt *was* counted when it took
+      // the row; using the stale object would write that count back and the
+      // crash would silently buy an extra attempt out of the retry budget.
+      const requeued = await this.deps.repo.findById(jobId);
+      if (requeued) job = requeued;
     }
 
     const now = new Date().toISOString();
@@ -255,10 +297,41 @@ export class AuditWorker {
     } catch {
       // Invalid repoUrl: let the pipeline throw.
     }
-    const commitSha =
-      (await this.deps.metadataAnalyzer.getHeadSha(owner, repo, 'main').catch(() => null)) ??
-      (await this.deps.metadataAnalyzer.getHeadSha(owner, repo, 'master').catch(() => null)) ??
-      'unknown';
+    const runAudit = async (): Promise<{ report: Report }> => {
+      const r = await this.deps.pipeline.run({
+        repoUrl: input.repoUrl,
+        mode: input.mode,
+        target: input.target,
+        outputLanguage: input.outputLanguage,
+        includeLaunchCopy: input.includeLaunchCopy,
+      });
+      return { report: r.report };
+    };
+
+    // Resolve the head SHA through the repository's *default* branch.
+    //
+    // This used to try `main`, then `master`, then fall back to the string
+    // `'unknown'`. Both names are conventions rather than guarantees, and a
+    // repository whose default branch is `develop`, `trunk` or `v1` answers
+    // 404 to each — so `commitSha` was the constant `'unknown'`, and the cache
+    // key is built from `commitSha`. Every audit of such a repository, at any
+    // commit, therefore shared one entry and the first report was served for
+    // the whole TTL. GitHub also answers 403 under rate limiting, which failed
+    // both guesses and collapsed the key the same way. (R-45.)
+    const branch = await this.deps.metadataAnalyzer.getDefaultBranch(owner, repo);
+    const commitSha = branch
+      ? await this.deps.metadataAnalyzer.getHeadSha(owner, repo, branch).catch(() => null)
+      : null;
+
+    // A cache key without a resolved SHA is not a cache key, it is a bucket.
+    // Run the audit rather than store it under one.
+    if (commitSha === null) {
+      const { report } = await runAudit();
+      return {
+        report: ReportSchema.parse(report),
+        cache: { hit: false, keyVersion, expiresAt: null },
+      };
+    }
 
     const { buildCacheKey } = await import('./cache-service.js');
     const cacheKey = buildCacheKey({
@@ -272,21 +345,7 @@ export class AuditWorker {
       includeLaunchCopy: input.includeLaunchCopy ?? false,
     });
 
-    const result = await this.deps.cache.getOrCompute(
-      cacheKey,
-      keyVersion,
-      commitSha,
-      async () => {
-        const r = await this.deps.pipeline.run({
-          repoUrl: input.repoUrl,
-          mode: input.mode,
-          target: input.target,
-          outputLanguage: input.outputLanguage,
-          includeLaunchCopy: input.includeLaunchCopy,
-        });
-        return { report: r.report };
-      },
-    );
+    const result = await this.deps.cache.getOrCompute(cacheKey, keyVersion, commitSha, runAudit);
     return {
       report: ReportSchema.parse(result.report),
       cache: {

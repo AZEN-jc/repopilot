@@ -156,4 +156,45 @@ describe('ReportBuilder', () => {
     // Chinese characters present somewhere in summary
     expect(/[\u4e00-\u9fa5]/.test(r.report.summary)).toBe(true);
   });
+
+  it('discloses files whose content could not be read', () => {
+    // Both content paths drop files silently — `filterFiles` in `skipped`,
+    // `extractTarball` in `missing` / `truncated` — and neither reached the
+    // report, so "no secrets found" was indistinguishable from "no secrets
+    // read". The one false negative a release gate must not be able to
+    // produce quietly.
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries: [entry('README.md'), entry('src/huge-binary.ts')],
+      contents: new Map([['README.md', '# Title\n']]),
+      truncated: false,
+      auditMode: 'quick',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: true,
+      contentSkipped: 1,
+    });
+    const line = r.report.limitations.find((l) => l.includes('Content was truncated'));
+    expect(line).toBeDefined();
+    expect(line).toContain('1 of 2');
+  });
+
+  it('stays quiet when every selected file was read', () => {
+    // The complement: a clean audit must not grow a limitation nobody asked
+    // for, and the coverage contract must not warn on it.
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries: [entry('README.md')],
+      contents: new Map([['README.md', '# Title\n']]),
+      truncated: false,
+      auditMode: 'quick',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: true,
+      contentSkipped: 0,
+    });
+    expect(
+      r.report.limitations.some((l) => l.includes('Content was truncated')),
+    ).toBe(false);
+  });
 });

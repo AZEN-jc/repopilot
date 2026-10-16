@@ -40,6 +40,7 @@ function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     MAX_FILE_BYTES: 1_048_576,
     MAX_TOTAL_BYTES: 52_428_800,
     RATE_LIMIT_PER_MINUTE: 60,
+    TRUSTED_PROXY_IPS: ['127.0.0.1', '::1', '::ffff:127.0.0.1'],
     GITHUB_TOKEN: '',
     PAYMENT_MODE: 'mock',
     OKX_PAYMENT_ADDRESS: '',

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Contents
 
-- [Unreleased](#unreleased) — [Added](#added) · [Changed](#changed) · [Fixed](#fixed) · [Removed](#removed)
+- [Unreleased](#unreleased) — [Added](#added) · [Changed](#changed) · [Security](#security) · [Fixed](#fixed) · [Removed](#removed)
 - [0.1.0-rc.3](#010-rc3---2026-07-19)
 - [0.1.0-rc.2](#010-rc2---2026-07-19)
 - [0.1.0-rc.1](#010-rc1---2026-07-19)
@@ -1445,6 +1445,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_repopilot_capabilities` gained a `billing` field. The three
   original MCP tool signatures are unchanged.
 - Nothing else changed in the existing API surface or report schema.
+
+### Security
+
+- **The report cache key could collapse onto one bucket per repository.**
+  `AuditWorker.executeWithCache` resolved the head SHA by guessing `main`,
+  then `master`, then falling back to the literal string `'unknown'` — and
+  the cache key is built from `commitSha`. Both branch names are
+  conventions rather than guarantees: a repository defaulted to `develop`,
+  `trunk` or `v1` answers 404 to each guess, and GitHub's 403 under rate
+  limiting collapses them the same way. Every audit of such a repository,
+  at every commit, then shared one entry, and the first report was served
+  for the whole TTL to every subsequent buyer — a stale verdict about code
+  they had paid to have analysed. The SHA is now resolved through the
+  repository's *default* branch (`MetadataAnalyzer.getDefaultBranch`), and
+  when it cannot be resolved the cache is bypassed entirely: an
+  unresolvable SHA is not a key, it is a bucket. The route records the same
+  resolution on the job row, so the value the caller was quoted and the
+  value the worker keys on agree. Pinned by two tests: one asserts
+  `getHeadSha` is called with the branch the repository reported, one
+  asserts `getOrCompute` is never reached when the default branch cannot
+  be resolved — and the completed row says `hit: false, expiresAt: null`
+  rather than reporting a hit on a cache it never consulted. (R-45.)
+- **A completed audit was re-served to anyone who knew its
+  `Idempotency-Key`.** The POST handler short-circuited on an existing
+  completed row *before* payment verification: pay once under a key,
+  re-post the same key with no `X-PAYMENT` header, and the report came
+  back. An idempotency key is chosen by the client and binds to nothing —
+  it is not an identity, and knowing one is not evidence of having paid
+  for the job it names. The completed-row branch now requires the
+  `X-PAYMENT` header to name *that job's* payment, and without it answers
+  402 with a fresh challenge attached to the same job row — so a caller
+  who pays the challenge gets an answer on replay instead of a 402 loop,
+  and the row's `status` field tells the truth about what it is. The
+  payer's own idempotent read (same key, same header) still returns the
+  report. Pinned by an integration test that walks the whole sequence:
+  pay, complete, re-read with the original header, then replay the key
+  with no header and get a 402 naming a different payment. (R-46.)
+- **A worker that died mid-attempt left the job stuck in `processing`
+  forever.** `runOnce` opens by skipping a job it finds in `processing` —
+  correct while a worker holds it, fatal when the worker died: the
+  redelivery pg-boss sends after `expireInSeconds` found a row it refused
+  to touch, and the buyer polled a 202 forever on a job they had paid
+  for. A row whose `startedAt` is older than the queue's own redelivery
+  window is now reclaimed by a guarded `processing → queued` write (the
+  guard means a live worker and a reclaiming one cannot both win), and the
+  attempt counter is re-read after the reclaim so the crashed attempt
+  keeps its count instead of silently buying the retry budget an extra
+  attempt. The bound is derived from one variable that also feeds
+  pg-boss's `expireInSeconds`, so the reclaim can never race the expiry
+  that is supposed to free the job. Pinned by two tests: a stale row is
+  reclaimed and completes with `attempts: 2`, a fresh one is left alone.
+  (R-44.)
+- **A forged `X-Forwarded-For` header disabled rate limiting.** The
+  `keyGenerator` returned `req.ip`, and the server runs with
+  `trustProxy: true` — so the "client address" the limiter keyed on was a
+  header the client wrote. Two exploits, one root cause:
+  `X-Forwarded-For: 127.0.0.1` put the caller in the allow-list (exempt
+  from the limit entirely), and a fresh random value per request reset the
+  bucket every time. The key is now the socket peer — the one address this
+  process did not read off the request — unless the peer is a proxy named
+  in the new `TRUSTED_PROXY_IPS`, in which case the *right-most*
+  `X-Forwarded-For` entry is used: the one the proxy appended, not the
+  left-most one the client claimed about itself. The allow-list is
+  unchanged in meaning and unreachable by writing a header. Five tests
+  drive the real plugin through `app.inject` with a faked socket peer.
+  **Operational note:** deployments behind nginx or Caddy must set
+  `TRUSTED_PROXY_IPS` to the proxy's address (loopback in the shipped
+  compose topology), or every client is keyed by the proxy and shares one
+  bucket. `.env.example` documents the variable and the caveat. (R-24.)
+- **Files whose content could not be read were dropped from the audit
+  silently.** Both content paths — `filterFiles` recording a file in
+  `skipped` for being over a size or byte cap, and `extractTarball`
+  recording one as `missing`/`truncated` — dropped the file without a
+  word in the report, so "no secrets found" was indistinguishable from
+  "no secrets read": the one false negative a release gate must not be
+  able to produce quietly. The pipeline now derives the count
+  (`included.length - contents.size`) and the builder discloses it as a
+  limitation — "Content was truncated out of this audit: N of M files
+  selected for analysis could not be read" — which the quality contract
+  reads as the same coverage warning a truncated tree produces. Pinned by
+  two tests: the sentence appears with the right counts, and a clean
+  audit grows no limitation.
+- **A history scan that stopped part-way discarded the commits it had
+  already read.** The per-commit loop's failure was caught outside it, so
+  a rate limit on the sixth of twenty commits reported
+  `scannedCommits: 0` — "commit history could not be read" — while the
+  first five had been fetched and their secrets thrown away. Each commit
+  is now read inside its own try, the scan keeps what it read, and the
+  report says where it stopped ("5 of 20 requested commits … stopped at
+  commit abc1234") instead of claiming the boundary had been chosen.
+  `complete` distinguishes a stopped scan from a fully-read history
+  regardless of how many commits it managed. Pinned by a builder test
+  that feeds the stopped-scan shape through the limitation builder.
 
 ### Fixed
 

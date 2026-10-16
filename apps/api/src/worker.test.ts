@@ -102,6 +102,7 @@ describe('buildAuditQueue with consume:false', () => {
       cache,
       cacheEnabled: false,
       metadataAnalyzer: { /* eslint-disable @typescript-eslint/no-explicit-any */
+        getDefaultBranch: async () => null,
         getHeadSha: async () => 'unknown' } as any,
       allowedHosts: ['github.com'],
       consumeOverride: false,

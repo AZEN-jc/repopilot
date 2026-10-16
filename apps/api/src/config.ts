@@ -27,6 +27,20 @@ const ConfigSchema = z.object({
   MAX_TOTAL_BYTES: z.coerce.number().int().positive().default(52_428_800),
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(60),
 
+  // Reverse proxies whose `X-Forwarded-For` this deployment believes.
+  //
+  // The header is client-writable, so reading it with no trusted proxy in
+  // front is reading an assertion as a fact: `X-Forwarded-For: 127.0.0.1`
+  // would put the caller inside the rate-limit allow-list, and a fresh random
+  // value per request would reset the bucket every time. Loopback only by
+  // default, which is what `verify:release` and the tests run against. A
+  // deployment behind nginx or Caddy MUST name that proxy's address here, or
+  // every client behind it shares one bucket.
+  TRUSTED_PROXY_IPS: z
+    .string()
+    .default('127.0.0.1,::1,::ffff:127.0.0.1')
+    .transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean)),
+
   PAYMENT_MODE: z.enum(['mock', 'okx']).default('mock'),
   OKX_PAYMENT_ADDRESS: z.string().default(''),
   OKX_PAYMENT_NETWORK: z.string().default('xlayer'),

@@ -72,6 +72,17 @@ export interface ReportBuilderInput {
    * cost, not what it saw.
    */
   degraded?: boolean;
+  /**
+   * How many of the files selected for analysis could not be read.
+   *
+   * Both content paths drop files silently today: `filterFiles` records them
+   * in `skipped` and `extractTarball` in `missing` / `truncated`, and neither
+   * reaches the report. The caller derives this as `included.length -
+   * contents.size`, which needs no new plumbing and covers both paths. Without
+   * it, "no secrets found" is indistinguishable from "no secrets read" — the
+   * one false negative a release gate must not be able to produce quietly.
+   */
+  contentSkipped?: number;
 }
 
 export interface ReportBuilderResult {
@@ -267,7 +278,9 @@ export class ReportBuilder {
         tier,
         web3,
         input.historyScan,
-        input.degraded ?? false
+        input.degraded ?? false,
+        input.contentSkipped ?? 0,
+        input.entries.length
       ),
       generatedAt: new Date().toISOString(),
       auditMode: input.auditMode,
@@ -550,7 +563,9 @@ function buildLimitations(
   tier: { mode: 'quick' | 'full'; includeLaunchCopy: boolean },
   web3: Web3Analysis,
   historyScan?: HistoryScan,
-  degraded?: boolean
+  degraded?: boolean,
+  contentSkipped = 0,
+  selectedFiles = 0
 ): string[] {
   const out: string[] = [
     'Static analysis only — repository code is NEVER executed by RepoPilot.',
@@ -570,14 +585,35 @@ function buildLimitations(
     if (historyScan.scannedCommits === 0) {
       out.push(`Commit history was not scanned${historyScan.note ? `: ${historyScan.note}` : ''}.`);
     } else if (!historyScan.complete) {
+      // Two different shortfalls wear the same `complete: false`. Reading
+      // fewer commits than were asked for means the scan stopped part-way —
+      // which is the case that used to report zero commits read and discard
+      // the ones it had. Reading exactly as many as asked means there may be
+      // older history nobody looked at. Only the second is "the most recent
+      // N".
       out.push(
-        `Commit history was scanned for the most recent ${historyScan.scannedCommits} ` +
-          'commits only; older history was not examined.'
+        historyScan.scannedCommits < historyScan.requestedCommits
+          ? `Commit history was scanned for ${historyScan.scannedCommits} of ` +
+            `${historyScan.requestedCommits} requested commits` +
+            `${historyScan.note ? `: ${historyScan.note}` : ''}. Older history was not examined.`
+          : `Commit history was scanned for the most recent ${historyScan.scannedCommits} ` +
+            'commits only; older history was not examined.'
       );
     }
   }
   if (truncated) {
     out.push('The repository tree is large; the listing was truncated. Some files were not analyzed.');
+  }
+  // Distinct from the tree truncation above: there the *listing* was cut short,
+  // here every wanted path was known and some of them still could not be read.
+  // Both end with files nobody looked at, so both end in the same word — the
+  // coverage contract in `quality/evaluate.ts` matches on it.
+  if (contentSkipped > 0) {
+    out.push(
+      `Content was truncated out of this audit: ${contentSkipped} of ${selectedFiles} ` +
+        'files selected for analysis could not be read — each over a size or byte cap, ' +
+        'or absent from the archive. Findings from them are absent, not negative.'
+    );
   }
   if (degraded) {
     out.push(

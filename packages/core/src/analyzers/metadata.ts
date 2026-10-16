@@ -90,6 +90,27 @@ export class MetadataAnalyzer {
   }
 
   /**
+   * The repository's default branch, or `null` when the repo cannot be read.
+   *
+   * One request, unlike `fetch()`, which also asks for issue and pull counts
+   * that a caller resolving a SHA does not need.
+   *
+   * This exists because guessing the branch name is not sound: `main` and
+   * `master` are conventions, not guarantees, and a repository whose default
+   * branch is `develop`, `trunk` or `v1` answers 404 to both. Callers that
+   * turned that 404 into a constant produced one shared cache entry for every
+   * commit of such a repository — see `AuditWorker.executeWithCache`.
+   */
+  async getDefaultBranch(owner: string, repo: string): Promise<string | null> {
+    try {
+      const { data } = await this.octokit.repos.get({ owner, repo });
+      return typeof data?.default_branch === 'string' && data.default_branch ? data.default_branch : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Resolve the HEAD commit SHA of a branch. Used to compute a stable
    * cache key for paid audits: a new SHA always re-runs the pipeline.
    *

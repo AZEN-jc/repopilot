@@ -51,7 +51,9 @@ import {
   type AuditJob,
   type AuditPipeline,
   type MetadataAnalyzer,
+  type Report,
 } from '@repopilot/core';
+import { ReportBuilder } from '@repopilot/core/report';
 import { createLogger } from '../utils/logger.js';
 import { _resetConfigCacheForTests } from '../config.js';
 
@@ -125,9 +127,45 @@ async function seedQueuedJob(repo: JobRepository, jobId: string): Promise<void> 
   await repo.insert(job);
 }
 
+/**
+ * Seed a job the way a crashed attempt leaves it: `insert()` hardcodes
+ * `startedAt`/`attempts` to null/0 (they are written by the lifecycle, never
+ * at creation), so the crashed state has to be built through the same two
+ * steps the worker uses — insert, then take.
+ */
+async function seedCrashedAttempt(
+  repo: JobRepository,
+  jobId: string,
+  startedAt: string,
+): Promise<void> {
+  await seedQueuedJob(repo, jobId);
+  await repo.update(jobId, { status: 'processing', startedAt, attempts: 1 });
+}
+
 interface Harness {
   queue: ReturnType<typeof buildAuditQueue>;
   repo: JobRepository;
+}
+
+/** A metadata analyzer whose answers are recorded, so a test can assert *how* the SHA was resolved. */
+function recordingMetadata(defaultBranch: string | null, headSha: string | null = 'abc123') {
+  const calls: { getDefaultBranch: number; getHeadSha: Array<{ owner: string; repo: string; branch: string }> } = {
+    getDefaultBranch: 0,
+    getHeadSha: [],
+  };
+  return {
+    calls,
+    analyzer: {
+      getDefaultBranch: async (): Promise<string | null> => {
+        calls.getDefaultBranch += 1;
+        return defaultBranch;
+      },
+      getHeadSha: async (owner: string, repo: string, branch: string): Promise<string | null> => {
+        calls.getHeadSha.push({ owner, repo, branch });
+        return headSha;
+      },
+    } as unknown as MetadataAnalyzer,
+  };
 }
 
 /** The real inline queue, over an isolated SQLite database. */
@@ -135,6 +173,9 @@ async function harness(options: {
   pipeline: AuditPipeline;
   retryLimit?: number;
   jobTimeoutMs?: number;
+  metadataAnalyzer?: MetadataAnalyzer;
+  /** Override the cache the worker is handed (used to spy on `getOrCompute`). */
+  cache?: CacheService;
 }): Promise<Harness> {
   const { db, repo } = await openRepo();
   const queue = buildAuditQueue({
@@ -142,14 +183,17 @@ async function harness(options: {
     dbMode: 'sqlite',
     repo,
     pipeline: options.pipeline,
-    cache: new CacheService({
+    cache: options.cache ?? new CacheService({
       repo: new ReportCacheRepository(db),
       enabled: false,
       ttlSeconds: 60,
       log: createLogger({ level: 'silent' }),
     }),
     cacheEnabled: false,
-    metadataAnalyzer: { getHeadSha: async () => null } as unknown as MetadataAnalyzer,
+    // Default: the SHA cannot be resolved, which is also the path every
+    // failure-contract test above takes — the cache is bypassed and the
+    // pipeline's throw is the only thing that decides the outcome.
+    metadataAnalyzer: options.metadataAnalyzer ?? recordingMetadata(null).analyzer,
     allowedHosts: ['github.com'],
     driverOverride: 'inline',
     retryLimitOverride: options.retryLimit ?? 1,
@@ -199,6 +243,51 @@ async function runToTerminal(options: {
   } finally {
     await queue.stop();
   }
+}
+
+/**
+ * A pipeline that succeeds, so a reclaimed or cache-bypassed job can be
+ * observed *completing* rather than failing. The report comes from the real
+ * builder because `executeWithCache` runs `ReportSchema.parse` on whatever
+ * comes back, and a hand-shaped object that drifts from the schema would test
+ * the schema, not the worker.
+ */
+function succeedingPipeline(): { pipeline: AuditPipeline; calls: () => number } {
+  let calls = 0;
+  const pipeline = {
+    run: async () => {
+      calls += 1;
+      return { report: minimalReport() };
+    },
+  } as unknown as AuditPipeline;
+  return { pipeline, calls: () => calls };
+}
+
+function minimalReport() {
+  return new ReportBuilder().build({
+    metadata: {
+      owner: 'octocat',
+      name: 'Hello-World',
+      defaultBranch: 'main',
+      license: 'MIT',
+      lastUpdatedAt: '2026-01-01T00:00:00Z',
+      visibility: 'public',
+      archived: false,
+      stars: 0,
+      openIssues: 0,
+      openPulls: 0,
+      description: 'Test',
+      primaryLanguage: 'TypeScript',
+      url: 'https://github.com/octocat/Hello-World',
+    },
+    entries: [{ path: 'README.md', size: 50 }],
+    contents: new Map([['README.md', '# Title\n']]),
+    truncated: false,
+    auditMode: 'quick',
+    target: 'open_source',
+    outputLanguage: 'en',
+    includeLaunchCopy: true,
+  }).report;
 }
 
 describe('AuditWorker failure contract (inline driver)', () => {
@@ -298,6 +387,148 @@ describe('AuditWorker failure contract (inline driver)', () => {
       const after = await repo.findById('job_delivered_twice');
       expect(after?.status).toBe('failed');
       expect(after?.attempts).toBe(1);
+    } finally {
+      await queue.stop();
+    }
+  });
+});
+
+/**
+ * R-42: a worker that dies mid-attempt leaves the row in `processing`, and
+ * `runOnce` used to treat that as "someone else has it" and return. The
+ * redelivery that was supposed to follow the crash therefore found a row it
+ * refused to touch, and the buyer polled a 202 forever — for a job they had
+ * already paid for.
+ *
+ * The reclaim is bounded by `staleProcessingMs`, which `build-queue.ts` derives
+ * from the queue's own redelivery window (`jobTimeoutMs + 30 s` headroom), so
+ * a live worker can never be younger than the bound: its attempt is inside the
+ * deadline the bound is derived from.
+ */
+describe('stale-processing reclaim (R-42)', () => {
+  it('reclaims a job a dead worker parked in processing, and completes it', async () => {
+    const { pipeline, calls } = succeedingPipeline();
+    const { queue, repo } = await harness({ pipeline, retryLimit: 0 });
+    try {
+      // Exactly what a crashed attempt leaves behind: the take happened,
+      // `startedAt` was written, the terminal write never was.
+      await seedCrashedAttempt(repo, 'job_crashed_mid_attempt', new Date(Date.now() - 5 * 60_000).toISOString());
+      await queue.enqueue({ jobId: 'job_crashed_mid_attempt' });
+
+      const job = await waitForTerminal(repo, 'job_crashed_mid_attempt');
+      expect(job.status).toBe('completed');
+      expect(job.report).not.toBeNull();
+      // One attempt, not zero: the redelivery actually ran the audit instead
+      // of being dropped on the floor.
+      expect(calls()).toBe(1);
+      // Two, not one: the crashed attempt keeps its count. Re-reading it as
+      // one would hand every crash a free attempt out of the retry budget.
+      expect(job.attempts).toBe(2);
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  it('does not touch a processing job a live worker is still holding', async () => {
+    // The other half of the bound: a row taken a moment ago must be left
+    // alone, or two workers run the same job and one of them burns the
+    // buyer's payment for nothing.
+    const { pipeline, calls } = succeedingPipeline();
+    const { queue, repo } = await harness({ pipeline });
+    try {
+      await seedCrashedAttempt(repo, 'job_fresh_processing', new Date().toISOString());
+      await queue.enqueue({ jobId: 'job_fresh_processing' });
+      await new Promise((r) => setTimeout(r, 250));
+
+      expect(calls()).toBe(0);
+      const job = await repo.findById('job_fresh_processing');
+      expect(job?.status).toBe('processing');
+      expect(job?.startedAt).not.toBeNull();
+    } finally {
+      await queue.stop();
+    }
+  });
+});
+
+/**
+ * The cache key is built from `commitSha`, and the SHA used to be resolved by
+ * guessing `main`, then `master`, then falling back to the literal string
+ * `'unknown'`. Both names are conventions, not guarantees — a repo whose
+ * default branch is `develop` or `trunk` 404s on both, and GitHub's 403 under
+ * rate limiting collapsed them the same way. The key then read
+ * `…/unknown` for *every* audit of such a repo, at *every* commit, so the
+ * first report was served for the whole TTL to every subsequent buyer.
+ *
+ * Two invariants pin the fix: the SHA comes from the repository's *actual*
+ * default branch, and an unresolvable SHA disables the cache rather than
+ * sharing a bucket under a made-up key.
+ */
+describe('head SHA resolution and the cache key', () => {
+  it('resolves the SHA through the repository default branch, not main/master guesses', async () => {
+    const { pipeline, calls } = succeedingPipeline();
+    const meta = recordingMetadata('develop', 'deadbeef');
+    const { queue, repo } = await harness({ pipeline, metadataAnalyzer: meta.analyzer, retryLimit: 0 });
+    try {
+      await seedQueuedJob(repo, 'job_develop_branch');
+      await queue.enqueue({ jobId: 'job_develop_branch' });
+      const job = await waitForTerminal(repo, 'job_develop_branch');
+
+      expect(job.status).toBe('completed');
+      expect(calls()).toBe(1);
+      // The branch that was asked for is the one the repository reported —
+      // neither guess, and no string that could end up in a key.
+      expect(meta.calls.getHeadSha).toHaveLength(1);
+      expect(meta.calls.getHeadSha[0]).toEqual({
+        owner: 'octocat',
+        repo: 'Hello-World',
+        branch: 'develop',
+      });
+    } finally {
+      await queue.stop();
+    }
+  });
+
+  it('bypasses the cache entirely when the default branch cannot be resolved', async () => {
+    // No branch -> no SHA -> no key. The audit still runs (the buyer paid),
+    // but nothing is stored or served under a bucket every other audit of
+    // the same repo would share.
+    const { pipeline, calls } = succeedingPipeline();
+    const meta = recordingMetadata(null);
+    const getOrComputeCalls: Array<{ key: string; commitSha: string }> = [];
+    // A spy that behaves exactly like a disabled CacheService — compute and
+    // report a miss — so the only thing under observation is whether the
+    // worker reached for the cache at all.
+    const spiedCache = {
+      getOrCompute: async (
+        key: string,
+        _keyVersion: string,
+        commitSha: string,
+        compute: () => Promise<{ report: Report }>,
+      ) => {
+        getOrComputeCalls.push({ key, commitSha });
+        const result = await compute();
+        return { report: result.report, hit: false, keyVersion: 'v1', expiresAt: null };
+      },
+    } as unknown as CacheService;
+
+    const { queue, repo } = await harness({
+      pipeline,
+      metadataAnalyzer: meta.analyzer,
+      cache: spiedCache,
+      retryLimit: 0,
+    });
+    try {
+      await seedQueuedJob(repo, 'job_no_default_branch');
+      await queue.enqueue({ jobId: 'job_no_default_branch' });
+      const job = await waitForTerminal(repo, 'job_no_default_branch');
+
+      expect(job.status).toBe('completed');
+      expect(calls()).toBe(1);
+      // The headline: nothing was ever looked up or stored under a key.
+      expect(getOrComputeCalls).toHaveLength(0);
+      // And the row says so, rather than reporting a hit on a cache it
+      // never consulted.
+      expect(job.cache).toEqual({ hit: false, keyVersion: 'v1', expiresAt: null });
     } finally {
       await queue.stop();
     }

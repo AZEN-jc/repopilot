@@ -265,6 +265,29 @@ describe('warnings', () => {
     expect(checkStatus(result, 'coverage.partial-tree')).toBe('warn');
   });
 
+  it('warns, but still ships, when files were dropped by a content cap', () => {
+    // Distinct from the tree truncation above: every wanted path was known
+    // and some still could not be read — over a size or byte cap, or absent
+    // from the archive. The consequence is the same ("no secrets found" is
+    // weaker than it looks), so the same warning fires, and for the same
+    // reason: the project is not at fault, the analysis is partial.
+    const result = evaluateQualityContract(
+      clean({
+        limitations: [
+          'Static analysis only.',
+          'Content was truncated out of this audit: 3 of 10 files selected for ' +
+            'analysis could not be read — each over a size or byte cap, or absent ' +
+            'from the archive. Findings from them are absent, not negative.',
+        ],
+      })
+    );
+    expect(result.status).toBe('pass_with_warnings');
+    expect(result.ship).toBe(true);
+    expect(result.blockerCount).toBe(0);
+    expect(result.warningCount).toBe(1);
+    expect(checkStatus(result, 'coverage.partial-tree')).toBe('warn');
+  });
+
   it('a failure outranks a warning', () => {
     const result = evaluateQualityContract(
       reportWithFindings([withRule('CI-001')], {

@@ -85,7 +85,7 @@ export class AuditPipeline {
       metadata.defaultBranch
     );
 
-    const { included } = filterFiles(entries, {
+    const { included, skipped } = filterFiles(entries, {
       maxFiles: this.opts.maxFiles,
       maxFileBytes: this.opts.maxFileBytes,
     });
@@ -106,6 +106,15 @@ export class AuditPipeline {
       }
     );
 
+    // Wanted paths that came back with no content. Both paths drop these
+    // silently — `filterFiles` in `skipped`, `extractTarball` in
+    // `missing` / `truncated` — and neither reached the report, so a gate
+    // could say "no secrets found" about files it never opened. The count is
+    // derivable from what the pipeline already has; `skipped.length` is not
+    // it, because that includes binaries and noise directories that were
+    // never candidates for reading.
+    const contentSkipped = Math.max(0, included.length - contents.size);
+
     const history = await this.scanHistory(fetcher, parsed.owner, parsed.repo, input.mode);
 
     const builder = new ReportBuilder();
@@ -124,6 +133,7 @@ export class AuditPipeline {
       historyFindings: history.findings,
       historyScan: history.scan,
       degraded,
+      contentSkipped,
     });
 
     return { report, truncated: reportTruncated, degraded };
@@ -160,10 +170,27 @@ export class AuditPipeline {
     try {
       const commits = await fetcher.listCommits(owner, repo, { limit: depth });
 
+      // Read the commits one at a time and keep what was read.
+      //
+      // The failure used to be caught outside the loop, which threw away every
+      // commit already in `scanned`: a rate limit on the sixth of twenty
+      // commits reported `scannedCommits: 0` and a note saying history could
+      // not be read, while the first five had been fetched and their secrets
+      // discarded. A partial scan is worth reporting as a partial scan.
       const scanned: ScannedCommit[] = [];
-      for (const c of commits) {
-        const files = await fetcher.fetchCommitChanges(owner, repo, c.sha);
-        scanned.push({ sha: c.sha, subject: c.subject, date: c.date, files });
+      let stoppedAt: number | null = null;
+      for (const [i, c] of commits.entries()) {
+        try {
+          const files = await fetcher.fetchCommitChanges(owner, repo, c.sha);
+          scanned.push({ sha: c.sha, subject: c.subject, date: c.date, files });
+        } catch (e) {
+          this.opts.log?.warn(
+            { err: (e as Error).message, sha: c.sha, owner, repo, scanned: scanned.length },
+            'commit read failed; stopping history scan'
+          );
+          stoppedAt = i;
+          break;
+        }
       }
 
       return {
@@ -171,11 +198,16 @@ export class AuditPipeline {
         scan: {
           mode: auditMode,
           requestedCommits: depth,
-          scannedCommits: commits.length,
+          scannedCommits: scanned.length,
           // Asking for more commits than exist means we reached the
           // beginning of the repository: the coverage really is complete.
-          complete: commits.length < depth,
-          note: null,
+          // A stopped scan is not, however many commits it managed.
+          complete: stoppedAt === null && commits.length < depth,
+          note:
+            stoppedAt === null
+              ? null
+              : `stopped at commit ${commits[stoppedAt]!.sha.slice(0, 7)}; ${scanned.length} of ` +
+                `${commits.length} commits were read`,
         },
       };
     } catch (e) {

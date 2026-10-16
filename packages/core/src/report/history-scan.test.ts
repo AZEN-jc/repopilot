@@ -115,4 +115,27 @@ describe('history scan scope', () => {
     expect(report.historyScan?.mode).toBe('full');
     expect(scopeLine(report)).toContain('100 commits only');
   });
+
+  it('distinguishes a scan that stopped part-way from one that read only the most recent N', () => {
+    // Reading fewer commits than were asked for is a failure mid-scan, not a
+    // scope decision. The old wording ("the most recent 5 commits only")
+    // reported it as though the boundary had been chosen — and the pipeline
+    // used to throw away the commits it had already read when the scan
+    // failed, so the report said 0 while five had been fetched and their
+    // secrets discarded. `scannedCommits: 5` with a stop note is the honest
+    // shape: the commits read are kept, and the note says where it stopped.
+    const report = build({
+      mode: 'quick',
+      requestedCommits: 20,
+      scannedCommits: 5,
+      complete: false,
+      note: 'stopped at commit abc1234; 5 of 20 commits were read',
+    });
+    expect(report.historyScan?.scannedCommits).toBe(5);
+    expect(report.historyScan?.complete).toBe(false);
+    const line = scopeLine(report);
+    expect(line).toContain('5 of 20 requested commits');
+    expect(line).toContain('stopped at commit abc1234');
+    expect(line).not.toContain('most recent');
+  });
 });

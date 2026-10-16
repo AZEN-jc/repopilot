@@ -44,6 +44,9 @@ class UnreachablePipeline {
 }
 
 class FakeMetadataAnalyzer {
+  async getDefaultBranch(): Promise<string | null> {
+    return 'main';
+  }
   async getHeadSha(): Promise<string | null> {
     return 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
   }

@@ -119,7 +119,10 @@ export async function buildApp(
   await registerSecurity(app, {
     corsOrigins: cfg.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean),
   });
-  await registerRateLimit(app, { perMinute: cfg.RATE_LIMIT_PER_MINUTE });
+  await registerRateLimit(app, {
+    perMinute: cfg.RATE_LIMIT_PER_MINUTE,
+    trustedProxyIps: cfg.TRUSTED_PROXY_IPS,
+  });
 
   const db = openDatabase(deps.databaseUrl ?? cfg.DATABASE_URL);
   await runMigrations(db);

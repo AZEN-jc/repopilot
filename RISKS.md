@@ -69,12 +69,18 @@ Active risks the team is aware of and how they are mitigated.
   (`R-41` is unused)
 - [R-43](#r-43--a-retryable-failure-could-reach-no-terminal-state-on-either-driver)
   — The inline queue never retries and never terminates a retryable failure
+- [R-44](#r-44--a-worker-that-died-mid-attempt-left-the-job-a-client-polls-forever)
+  — The crash half of R-43: a dead worker's row is skipped by every redelivery
+- [R-45](#r-45--the-report-cache-key-collapsed-onto-one-bucket-per-repository)
+  — A `main`/`master` guess put every non-standard repository on one cache entry
+- [R-46](#r-46--a-completed-audit-was-re-served-to-anyone-who-knew-its-idempotency-key)
+  — The completed-row short-circuit ran before payment verification
 
 ---
 
 ## How to read this file
 
-Forty-two entries (`R-41` is unused; the numbering jumps). Every one of them
+Forty-five entries (`R-41` is unused; the numbering jumps). Every one of them
 carries a `**Status:**` line as of 2026-10-08, and the line starts the line —
 a status folded into a `**Severity:**` line is invisible to a search and reads
 as no status at all, which is how three of them were lost until then. Five
@@ -791,64 +797,66 @@ count should read `Report.securityFindings`, not the diff.
 ## R-24 — A reverse proxy that omits `X-Forwarded-For` disables rate limiting
 
 **Severity:** High.
-**Status:** Accepted residual — mitigated in the shipped configurations, and
-undetectable at runtime. The entry's last section is the decision: the
-`keyGenerator` is not changed, because preferring the header is correct behind a
-proxy, and the fix belongs in deployment configuration, which is where it is.
+**Status:** **Fixed 2026-10-16 — the key is the socket peer, not `req.ip`,
+and the allow-list is no longer reachable by writing a header.** One
+residual remains, below: a *trusted* proxy that omits the header still
+exempts itself, which is what the shipped configurations exist to
+prevent.
 
-`apps/api/src/middleware/rate-limit.ts` keys the limiter like this:
+The `keyGenerator` used to read the header first and `req.ip` as a
+fallback, and the `allowList` was matched against the **key**, not
+against `req.ip` (`@fastify/rate-limit@10.3.0` does
+`params.allowList.indexOf(key)`, `index.js:233`). Two doors followed:
 
-```ts
-keyGenerator: (req) => {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd) return fwd.split(',')[0]!.trim();
-  return req.ip;
-},
-allowList: ['127.0.0.1', '::1'],
-```
+1. **The forgeable one.** `apps/api/src/server.ts` sets `trustProxy: true`,
+   so Fastify believes `X-Forwarded-For` from anyone — and `req.ip` follows
+   it. Any client that can reach the API directly could send
+   `X-Forwarded-For: 127.0.0.1` and be exempt from the limit entirely, or a
+   fresh random value per request and reset the bucket every time. Both
+   were the same defect: the "client address" was a header the client wrote.
+2. **The silent one.** A proxy that forwards the request **without**
+   `X-Forwarded-For` leaves `req.ip` equal to the proxy's own address. When
+   the proxy runs on the same host as the API — the shape both
+   `docs/deployment/nginx.conf.example` and `Caddyfile.example` describe —
+   that address is `127.0.0.1`, the allowListed entry, and every request
+   then matches the allowList. Nothing logs a warning; the limiter simply
+   stops limiting.
 
-The `allowList` is matched against the **key**, not against `req.ip`.
-`@fastify/rate-limit@10.3.0` does `params.allowList.indexOf(key)`
-(`index.js:233`), and its `allowList` docs describe it as an IP list, which is
-true only when no custom `keyGenerator` is supplied. Here one is.
+**What the fix is.** `registerRateLimit` now takes `trustedProxyIps` (the
+new `TRUSTED_PROXY_IPS` env var, defaulting to loopback) and keys on the
+socket peer — `req.socket.remoteAddress`, the one address this process did
+not read off the request. `req.ip` is deliberately not used, for the reason
+in door 1. When the peer *is* a configured trusted proxy, the key is the
+**right-most** `X-Forwarded-For` entry: the one the proxy appended, which is
+the client's address; the left-most is what the client claimed about itself.
+The `allowList` is now `[...trusted]`, matched against a key that is the
+peer unless the peer is trusted — so writing `X-Forwarded-For: 127.0.0.1`
+from an untrusted peer keys the caller by their own address and limits them
+like everyone else. Five tests in `apps/api/src/middleware/rate-limit.test.ts`
+drive the real plugin through `app.inject` with a faked socket peer: peer
+budget, forged header, right-most selection, header-forged allow-list, and
+the proxy's own exemption.
 
-The consequence is that the fallback branch is a trap. A proxy that forwards
-the request **without** `X-Forwarded-For` leaves `req.ip` equal to the proxy's
-own address. When the proxy runs on the same host as the API — the shape both
-`docs/deployment/nginx.conf.example` and `Caddyfile.example` describe — that
-address is `127.0.0.1`, which is exactly the allowListed entry. Every request
-then matches the allowList, and the rate limit is skipped entirely. Nothing
-logs a warning; the limiter simply stops limiting.
-
-The same trap has a second door. `apps/api/src/server.ts` sets
-`trustProxy: true`, so Fastify believes `X-Forwarded-For` from anyone. An API
-that a client can reach directly is therefore an API whose limit any client can
-skip by sending `X-Forwarded-For: 127.0.0.1`.
+**Accepted residual, by design.** A *trusted* proxy that forwards no
+`X-Forwarded-For` still keys every request by the proxy's own address, and
+the proxy is allowListed — so the limiter is off for that traffic, exactly
+as before. What changed is that the exemption now requires the operator to
+have named the proxy in `TRUSTED_PROXY_IPS`, and the shipped configurations
+set the header: `deploy/nginx/repopilot.conf` sets
+`X-Forwarded-For $proxy_add_x_forwarded_for` with a comment saying why the
+line must not be removed, `docker-compose.yml` publishes the API on
+`127.0.0.1:4000:4000` so the direct-reach door stays shut, and
+`scripts/compose-check.ts` fails if the header line is removed or the API is
+re-published on every host interface. A deployment behind nginx or Caddy
+must set `TRUSTED_PROXY_IPS` to the proxy's address, or every client is
+keyed by the proxy and shares one bucket — documented in `.env.example`
+with that caveat.
 
 **Why it is High rather than Low.** R-03 is the reason the limiter exists at
 all: anonymous GitHub access is 60 requests/hour per IP, and the four free
 tools inherit that budget. With the limiter off, one caller can exhaust the
 shared budget and take the service down for everyone, and the failure looks
 like GitHub rate limiting rather than like a misconfiguration.
-
-**Mitigation, in three places.**
-
-1. `deploy/nginx/repopilot.conf` sets `X-Forwarded-For
-   $proxy_add_x_forwarded_for` and carries a comment saying why the line must
-   not be removed. Both host templates carry the same warning.
-2. `docker-compose.yml` publishes the API on `127.0.0.1:4000:4000`, not
-   `4000:4000`, so the direct-reach door is shut in the shipped topology.
-3. `scripts/compose-check.ts` fails if any service other than `web` is
-   published on every host interface, and fails if the nginx config stops
-   forwarding `X-Forwarded-For`. Both checks were falsified: removing the
-   header line and re-publishing the API on `0.0.0.0` each make it exit 1.
-
-**Accepted residual, by design.** The `keyGenerator` is not changed. Preferring the
-header is the correct behaviour behind a proxy, and dropping the loopback
-entries would break local development, where there is no proxy and the client
-genuinely is `127.0.0.1`. The fix belongs in deployment configuration, which is
-where it now is — but a reviewer reading `rate-limit.ts` alone would not see
-it, so the trap is recorded here rather than left to be rediscovered.
 
 ## R-25 — A healthy container can be serving an unmigrated database
 
@@ -2621,3 +2629,160 @@ diagram is part of the reason the gap was not obvious from the worker alone. The
 tests are `apps/api/src/services/audit-worker.test.ts`, and all three mutations
 of this fix (park in `processing` again, drop the exhaustion check, remove the
 deadline) turn them red.
+
+---
+
+## R-44 — A worker that died mid-attempt left the job a client polls forever
+
+**Severity:** High
+**Likelihood:** Certain on every crash — an OOM-killed container, a deploy
+during an attempt, a host restart. Nothing has to be unusual about it.
+**Status:** Fixed 2026-10-16 — the reclaim is in `AuditWorker.runOnce`,
+bounded by the queue's own redelivery window. See below for the two places
+this almost went wrong.
+
+**What happens.** R-43 fixed the *thrown* failure: a retryable error parks
+the row in `queued` where a redelivery can claim it, and an exhausted budget
+is written terminal. The crash case was untouched. `runOnce` opens by
+skipping a job it finds in `processing` — correct while a worker holds it,
+fatal when the worker died holding it. The row stays `processing`, the
+redelivery pg-boss sends after `expireInSeconds` arrives, finds the dead
+attempt's leftovers, and is dropped on the floor. The buyer has paid and
+polls a 202 forever, and there is no sweep anywhere in the repository that
+would move the row: the only writers of a terminal status are the worker's
+own branches, `JobService.fail()` (which the worker does not call) and the
+HTTP layer. Same dead end as R-43, reached by a different door — R-43's
+entry said as much ("a sweep for stale non-terminal rows is the real
+answer"), and this is the half of that answer that fits in one guarded
+write.
+
+**Why the bound is what it is.** A row may only be treated as abandoned
+once the queue has given up on it, or two workers run the same job and one
+of them burns the buyer's payment for nothing. So the reclaim bound
+(`staleProcessingMs`) is derived from the same variable that feeds pg-boss's
+`expireInSeconds` — `jobTimeoutMs + 30 s`, computed once in
+`buildAuditQueue.ts` and handed to both. A live worker's attempt is inside
+the deadline by definition, so it can never look older than the bound while
+it is actually running.
+
+**Two places this almost went wrong, both caught by tests rather than by
+reading.**
+
+- The reclaim re-reads the row before the take. Using the object loaded at
+  the top of `runOnce` would write the crashed attempt's `attempts` value
+  back unchanged — the crash would silently buy the retry budget an extra
+  attempt, and the count on the row would be a lie the terminal decision is
+  made from. The test pins `attempts: 2` after one crash and one reclaim.
+- The guard is what makes it safe. The reclaim is a `processing → queued`
+  write guarded on `expectedStatus: 'processing'`, and the take that follows
+  is guarded on `'queued'`. A live worker and a reclaiming one cannot both
+  win, and a reclaim that loses the race skips rather than double-running.
+
+**What is still true.** A row whose `startedAt` is *null* — older than the
+field itself — is reclaimed immediately, because an attempt with no start
+time cannot be shown to be young. That is the right default for a crash
+(which is what a missing `startedAt` means in practice) and it does mean a
+row written by a future writer that omits the field would be reclaimed on
+sight. The alternative — treating null as fresh — parks a crashed job
+forever, which is the defect this entry exists to close.
+
+**Related.** R-43 (the thrown-failure half of the same dead end, and the
+entry that named this gap), R-16 (a queue that reaches production),
+D-039 (a queue name belongs to the database, not the process).
+`apps/api/src/services/audit-worker.test.ts` carries the two tests; removing
+the reclaim turns both red.
+
+---
+
+## R-45 — The report cache key collapsed onto one bucket per repository
+
+**Severity:** High
+**Likelihood:** Certain for any repository whose default branch is neither
+`main` nor `master` — and invisible, because the report that comes back
+looks exactly like a fresh one.
+**Status:** Fixed 2026-10-16 — the SHA resolves through the default branch,
+and an unresolvable SHA bypasses the cache. See below.
+
+**What happens.** The report cache key is built from
+`{owner, repo, commitSha, mode, target, outputLanguage, includeLaunchCopy,
+reportVersion}`, and `AuditWorker.executeWithCache` resolved `commitSha` by
+guessing `main`, then `master`, then falling back to the literal string
+`'unknown'`. Both names are conventions rather than guarantees: a repository
+defaulted to `develop`, `trunk` or `v1` answers 404 to each guess, and
+GitHub's 403 under rate limiting collapses them the same way. The key then
+read `…/unknown` for every audit of such a repository at every commit, so
+the first report was served for the whole TTL to every subsequent buyer — a
+stale verdict about code they had paid to have analysed. The cache metadata
+on the completed row said `hit: true`, which was true and useless: it
+reported a hit on a bucket, not on an answer.
+
+**What the fix is.** The SHA is resolved through the repository's *default*
+branch — `MetadataAnalyzer.getDefaultBranch()` asks GitHub what the branch
+is, and only then is `getHeadSha` called with it. When the default branch
+cannot be resolved, the cache is bypassed entirely: `runAudit()` runs and
+the row records `hit: false, expiresAt: null`, because a key without a
+resolved SHA is not a key, it is a bucket. The route records the same
+resolution on the job row, so the value the caller was quoted and the value
+the worker keys on agree — one resolution, one meaning, and `null` means
+"GitHub could not be reached" rather than being interchangeable with a
+sentinel string.
+
+**What is still true.** A repository whose default branch cannot be reached
+— GitHub down, rate-limited, or an anonymous hour exhausted — is not cached
+at all, for as long as that lasts. The cost is one audit per affected job,
+which is the honest price of serving a correct report; the alternative was
+serving an arbitrary old one.
+
+**Related.** R-24 (a header the client wrote, believed as an address — the
+same shape of trusting an unverified input one layer down), D-011 (the
+unique index that keeps two jobs from colliding on a payment, mirrored here
+by the key's eight dimensions). The two tests live in
+`apps/api/src/services/audit-worker.test.ts`; restoring the `main`/`master`
+guesses turns both red.
+
+---
+
+## R-46 — A completed audit was re-served to anyone who knew its idempotency key
+
+**Severity:** High
+**Likelihood:** Certain for any caller who replays a key — including the
+buyer's own client retrying after a network blip, which is the shape that
+makes this a revenue hole rather than a curiosity.
+**Status:** Fixed 2026-10-16 — the completed-row branch is gated on the
+`X-PAYMENT` header. See below.
+
+**What happens.** The POST handler looked the job up by `Idempotency-Key`
+first, and an existing completed row short-circuited *before* payment
+verification: pay once under a key, re-post the same key with no
+`X-PAYMENT` header, and the report came back in full. The key is
+client-chosen and binds to nothing — it is not an identity, and knowing one
+is not evidence of having paid for the job it names. This is the same class
+as R-40 (one authorization, unlimited audits) reached through a different
+door: the payment gate sat *after* the short-circuit instead of before it.
+
+**What the fix is.** The completed-row branch requires the `X-PAYMENT`
+header to name *that job's* payment — `readPaymentId` parses it through the
+adapter, so a header that names a different job's payment is a request to
+pay for this one, not a request to read it. Without it the route answers 402
+with a fresh challenge attached to the same job row, and the `status` field
+tells the truth about what the row is.
+
+**Why the challenge is attached to the completed row.** Without the attach,
+a caller who pays the new challenge and replays gets a 402 again — the row
+still names the old payment — and that loops forever while burning real
+nonces. With it, the second payment matches `job.paymentId` and the replay
+delivers the report: the operator is paid for what is served, and the
+caller gets an answer. The attach overwrites the original `paymentId`; the
+original payer already holds the report (it was delivered on completion),
+and the alternative — a payment-id history — is more machinery than the
+defect earns.
+
+**What is still true.** The `payment_id` column being UNIQUE means each 402
+carries its own challenge (D-011), so a caller who replays the key many
+times accumulates challenges on the row, each replacing the last. The row
+names the most recent one, which is the one a fresh payment would present.
+
+**Related.** R-40 (one authorization, unlimited audits — the same class,
+different door), D-011 (why every POST gets its own challenge). The
+integration test is in `apps/api/src/tests/api.integration.test.ts`; moving
+the short-circuit back above the verification turns it red.

@@ -100,6 +100,20 @@ export function buildAuditQueue(deps: BuildAuditQueueDeps): AuditQueue {
   const jobTimeoutMs = deps.jobTimeoutMsOverride ?? cfg.AUDIT_QUEUE_JOB_TIMEOUT_MS;
   const shutdownGraceMs = deps.shutdownGraceMsOverride ?? cfg.SHUTDOWN_GRACE_PERIOD_MS;
 
+  // pg-boss's expiry is the outer net, for a handler stuck somewhere the
+  // worker's own deadline does not reach. It needs headroom: pg-boss
+  // expires the job by killing it, without giving the worker a chance to
+  // write the row's terminal state, so when the two bounds are equal which
+  // one wins is a coin flip — and losing it leaves the row in whatever
+  // state the aborted attempt last wrote.
+  //
+  // The same number bounds the worker's reclaim of a row parked in
+  // `processing` (R-44): a row may only be treated as abandoned once
+  // pg-boss has given up on it, or two workers run the same job. One
+  // variable, so the two cannot drift apart.
+  const redeliverAfterMs =
+    Math.max(60, Math.ceil(jobTimeoutMs / 1000) + 30) * 1000;
+
   const worker = new AuditWorker({
     repo: deps.repo,
     pipeline: deps.pipeline,
@@ -109,6 +123,7 @@ export function buildAuditQueue(deps: BuildAuditQueueDeps): AuditQueue {
     allowedHosts: deps.allowedHosts,
     retryLimit,
     jobTimeoutMs,
+    staleProcessingMs: redeliverAfterMs,
     log: logShim,
   });
 
@@ -126,13 +141,7 @@ export function buildAuditQueue(deps: BuildAuditQueueDeps): AuditQueue {
       },
       concurrency,
       retryLimit,
-      // pg-boss's expiry is the outer net, for a handler stuck somewhere the
-      // worker's own deadline does not reach. It needs headroom: pg-boss
-      // expires the job by killing it, without giving the worker a chance to
-      // write the row's terminal state, so when the two bounds are equal which
-      // one wins is a coin flip — and losing it leaves the row in whatever
-      // state the aborted attempt last wrote.
-      expireInSeconds: Math.max(60, Math.ceil(jobTimeoutMs / 1000) + 30),
+      expireInSeconds: Math.round(redeliverAfterMs / 1000),
       consume: deps.consumeOverride,
       log: logShim,
     });
