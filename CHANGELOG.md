@@ -1462,12 +1462,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `packages/core/` as `analyzers + scoring + report + security + schemas + llm`,
   and `packages/core/src/llm` does not exist. Both are corrected to state the
   absence: scores, priorities, evidence, the summary and the launch copy are
-  produced by deterministic rules and templates. The same sweep caught a third
-  claim of the same shape, this one in `Makefile`'s header and repeated in the
-  README: that the `make` targets "mirror the package.json scripts exactly".
-  There are sixteen of them against roughly thirty scripts, and no gate reads
-  either file, so both now say what is true — `package.json` is the source of
-  truth and the Makefile covers the common targets.
+  produced by deterministic rules and templates. `PROJECT_STATE.md` carried the
+  same two claims — the layout block listed `packages/core/` as including `llm`,
+  and its Contents linked `#test-baseline-2026-10-06-0618-utc` against a heading
+  that is just `Test baseline`, so the link resolved to nothing. Both corrected.
+  The same sweep caught a third claim of the same shape, this one in `Makefile`'s
+  header and repeated in the README: that the `make` targets "mirror the
+  package.json scripts exactly". There are sixteen of them against roughly
+  thirty scripts, and no gate reads either file, so both now say what is true —
+  `package.json` is the source of truth and the Makefile covers the common
+  targets.
+- **`scripts/check-env.ts` was listed as deleted in the entry above and was
+  still in the tree.** 41 lines, a second copy of `env-check.ts`, referenced by
+  nothing — `package.json`'s `env:check` points at the other file, and the only
+  other occurrence of the string in the repository is a report finding id in
+  `screenshots/`. It is deleted now, which is what the Unreleased notes already
+  claimed.
 - **`RISKS.md`'s prose was audited against the tree, and fourteen entries were
   describing something that is not there.** The status lines were the previous
   batch; this one went after the half a script cannot check. Every entry's

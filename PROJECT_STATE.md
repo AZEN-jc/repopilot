@@ -19,7 +19,7 @@
 - [Process model (0.1.0-rc.3)](#process-model-010-rc3)
 - [MCP server](#mcp-server)
 - [Payment model](#payment-model)
-- [Test baseline (2026-10-06 06:18 UTC)](#test-baseline-2026-10-06-0618-utc)
+- [Test baseline](#test-baseline)
 - [Quality gates already passing](#quality-gates-already-passing)
 - [Repository Intelligence upgrade](#repository-intelligence-upgrade-planning-phase-0-done)
 - [Launch Readiness layer](#launch-readiness-layer--p0-core-done-2026-09-20)
@@ -55,7 +55,7 @@ repopilot/
     api/      # Fastify HTTP API
     web/      # React + Vite admin UI
   packages/
-    core/        # analyzers + scoring + report + security + schemas + llm
+    core/        # analyzers + scoring + report + security + schemas
     mcp-server/  # MCP server (stdio)
     okx-adapter/ # PaymentAdapter interface + mock + okx
   fixtures/      # <!-- docs-facts:fixture-count -->6<!-- docs-facts:end --> sample repos
