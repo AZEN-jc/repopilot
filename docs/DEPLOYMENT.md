@@ -258,10 +258,11 @@ server {
   index index.html;
 
   # Load-bearing: the API's rate limiter reads this header only when the socket
-  # peer is a proxy named in TRUSTED_PROXY_IPS, and it keys on the right-most
-  # entry — the one nginx appended. Without it the API keys every request by the
-  # proxy's own address, which is on its allow-list, so the limiter stops
-  # limiting. R-24.
+  # peer is a proxy named in TRUSTED_PROXY_IPS, and it walks the chain in from
+  # the right, skipping every address it has been told is ours — so the client
+  # is the entry this proxy appended, not the one the client claimed on the
+  # left. Without the header the API keys every request by the proxy's own
+  # address, which is on its allow-list, so the limiter stops limiting. R-24.
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
   location /api/  { proxy_pass http://repopilot_api; }
@@ -280,12 +281,13 @@ server {
 > is ignored entirely, which is the same outcome.
 
 > **The API must not be reachable from the internet.** `apps/api/src/server.ts`
-> sets `trustProxy: true`, so Fastify's `req.ip` follows `X-Forwarded-For` from
-> anyone. The rate limiter does not read `req.ip` — it keys on the socket peer —
-> so a directly reachable API is no longer a rate-limit bypass, but it is still
-> a forged-IP surface for anything that reports a client address. Bind it to
-> loopback (`HOST=127.0.0.1`) and do not open port 4000 in the firewall. See
-> R-24.
+> passes `TRUSTED_PROXY_IPS` to Fastify's `trustProxy`, so `req.ip` believes
+> `X-Forwarded-For` only from an address you named — the same list the rate
+> limiter uses, which is why the two can no longer disagree. The limiter itself
+> still keys on the socket peer rather than on `req.ip`, so a directly reachable
+> API is not a rate-limit bypass either way. The remaining reason to bind it to
+> loopback (`HOST=127.0.0.1`) is that an address reported to a user, a log or a
+> support ticket should not be one the client typed. See R-24.
 
 Caddy needs no certificate step: `reverse_proxy` sets `X-Forwarded-For` itself,
 appending rather than replacing, which is the behaviour the API needs.

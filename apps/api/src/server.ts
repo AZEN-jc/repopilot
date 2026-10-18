@@ -113,7 +113,26 @@ export async function buildApp(
     // when undefined). Omitting it says exactly the same thing, without
     // the FSTDEP023 warning on every boot.
     bodyLimit: 64 * 1024,
-    trustProxy: true,
+    // Who we believe about the client's address.
+    //
+    // This was `true`, which trusts `X-Forwarded-For` from anyone: a client
+    // that can open a TCP connection to this port chose the address that every
+    // `req.ip` reader reports. The rate limiter never read `req.ip` — it keys
+    // on the socket peer and walks the trusted list itself — so this was not a
+    // bypass. It was a loaded gun pointed at the next `req.ip` reader, and the
+    // loopback-only port binding was the only thing keeping it unloaded.
+    //
+    // The list the limiter already uses, for the same reason. `proxy-addr`
+    // walks in from the socket, skips every address we run, and stops at the
+    // first one we do not — so `req.ip` is the client as far as our own chain
+    // can tell, and a forged left-most entry is discarded rather than believed.
+    // Measured: peer `172.28.0.10` with `X-Forwarded-For: 1.2.3.4, 203.0.113.9`
+    // yields `req.ip = 203.0.113.9`, the entry the edge appended — the same
+    // value the limiter keys on.
+    //
+    // An empty list is the safe direction: nothing is trusted and `req.ip` is
+    // the socket peer.
+    trustProxy: cfg.TRUSTED_PROXY_IPS,
   });
 
   await registerSecurity(app, {

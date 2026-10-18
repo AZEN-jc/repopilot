@@ -176,13 +176,14 @@ for (const name of ['api', 'worker']) {
 
 // Nothing except the edge may be published on every host interface.
 //
-// `trustProxy: true` (`apps/api/src/server.ts`) makes Fastify's `req.ip` follow
-// `X-Forwarded-For` from anyone. The rate limiter is no longer among the things
-// that can be fooled by that — it keys on the socket peer and reads the header
-// only from a peer named in `TRUSTED_PROXY_IPS` (`middleware/rate-limit.ts`) —
-// so a published API is not a rate-limit bypass. It is still a forged-IP
-// surface for anything that reports a client address, and the edge is the only
-// thing supposed to see this traffic. R-24 records the whole history.
+// `apps/api/src/server.ts` passes `TRUSTED_PROXY_IPS` to Fastify's
+// `trustProxy`, so `req.ip` follows `X-Forwarded-For` only from an address the
+// operator named. The rate limiter is not among the things that can be fooled
+// either way — it keys on the socket peer and reads the header only from a peer
+// named in `TRUSTED_PROXY_IPS` (`middleware/rate-limit.ts`) — so a published
+// API is not a rate-limit bypass. It is still a surface where a reported
+// client address can be one the client chose, and the edge is the only thing
+// supposed to see this traffic. R-24 records the whole history.
 for (const [name, svc] of Object.entries(services)) {
   if (name === 'web') continue;
   const ports = (svc['ports'] ?? []) as Array<string | Record<string, unknown>>;

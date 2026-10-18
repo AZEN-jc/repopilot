@@ -252,8 +252,9 @@ the production default:
 <!-- docs-facts:end -->
 
 `web` is the only service that publishes a public port. `api` binds to
-loopback on purpose: it runs with `trustProxy: true`, so anything that can
-reach it directly can forge the client address it reports. The rate limiter is
+loopback on purpose: its `trustProxy` setting is `TRUSTED_PROXY_IPS`, so
+`req.ip` believes `X-Forwarded-For` only from an address that was named, and
+the edge is the only place supposed to see this traffic. The rate limiter is
 no longer among the things that can be fooled — it keys on the socket peer and
 reads `X-Forwarded-For` only from a peer named in `TRUSTED_PROXY_IPS`, which
 compose pins to `web`'s address on the bridge (R-24).

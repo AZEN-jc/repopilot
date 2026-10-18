@@ -21,6 +21,21 @@ import type { Finding, HistoryScan, Report } from './schemas/report.js';
 import { DEFAULT_LIMITS } from './utils/constants.js';
 import type { Logger } from 'pino';
 
+/**
+ * The fetcher surface the pipeline uses.
+ *
+ * Structural rather than `GitHubFetcher` so a test can drive `run()` with a
+ * fake and no network. Each method here is one HTTP call, and they are the
+ * only four the pipeline makes.
+ */
+export type PipelineFetcher = Pick<
+  GitHubFetcher,
+  'fetchTree' | 'fetchRepositoryContents' | 'listCommits' | 'fetchCommitChanges'
+>;
+
+/** The metadata surface the pipeline uses. Same reason as `PipelineFetcher`. */
+export type PipelineMetadata = Pick<MetadataAnalyzer, 'fetch'>;
+
 export interface PipelineOptions {
   githubToken?: string;
   allowedHosts: string[];
@@ -32,6 +47,18 @@ export interface PipelineOptions {
    * 0 disables it. Each commit costs one GitHub request.
    */
   historyScanCommits?: number;
+  /**
+   * Injection points for tests. Production callers omit both and get the
+   * GitHub-backed implementations.
+   *
+   * They exist because this package's tests never touch the network, which
+   * used to mean `run()` had no coverage at all: the history-scan loop, the
+   * `contentSkipped` count and the `degraded` flag were all reachable only
+   * through a real audit. Nothing here does I/O itself — the loop calls two
+   * methods on the fetcher — so a fake makes the whole path offline.
+   */
+  fetcher?: PipelineFetcher;
+  metadataAnalyzer?: PipelineMetadata;
   log?: Logger;
 }
 
@@ -56,9 +83,13 @@ export interface PipelineResult {
 }
 
 export class AuditPipeline {
-  private opts: Required<Omit<PipelineOptions, 'log' | 'githubToken'>> & {
+  private opts: Required<
+    Omit<PipelineOptions, 'log' | 'githubToken' | 'fetcher' | 'metadataAnalyzer'>
+  > & {
     githubToken?: string;
     log?: Logger;
+    fetcher?: PipelineFetcher;
+    metadataAnalyzer?: PipelineMetadata;
   };
 
   constructor(opts: PipelineOptions) {
@@ -69,16 +100,19 @@ export class AuditPipeline {
       maxFileBytes: opts.maxFileBytes ?? DEFAULT_LIMITS.maxFileBytes,
       maxTotalBytes: opts.maxTotalBytes ?? DEFAULT_LIMITS.maxTotalBytes,
       historyScanCommits: opts.historyScanCommits ?? DEFAULT_LIMITS.historyScanCommits,
+      fetcher: opts.fetcher,
+      metadataAnalyzer: opts.metadataAnalyzer,
       log: opts.log,
     };
   }
 
   async run(input: PipelineInput): Promise<PipelineResult> {
     const parsed = parseRepoUrl(input.repoUrl, this.opts.allowedHosts);
-    const metadataAnalyzer = new MetadataAnalyzer({ token: this.opts.githubToken });
+    const metadataAnalyzer =
+      this.opts.metadataAnalyzer ?? new MetadataAnalyzer({ token: this.opts.githubToken });
     const metadata: RepoMetadata = await metadataAnalyzer.fetch(parsed.owner, parsed.repo);
 
-    const fetcher = new GitHubFetcher(this.opts.githubToken);
+    const fetcher = this.opts.fetcher ?? new GitHubFetcher(this.opts.githubToken);
     const { entries, truncated } = await fetcher.fetchTree(
       parsed.owner,
       parsed.repo,
@@ -147,7 +181,7 @@ export class AuditPipeline {
    * succeeded. Returns an empty list and logs the reason instead.
    */
   private async scanHistory(
-    fetcher: GitHubFetcher,
+    fetcher: PipelineFetcher,
     owner: string,
     repo: string,
     auditMode: 'quick' | 'full'

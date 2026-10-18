@@ -204,12 +204,12 @@ server {
 # =============================================================================
 # WARNING — the API must not be reachable from the internet.
 #
-# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify's `req.ip`
-# follows `X-Forwarded-For` from anyone. The rate limiter does not read
-# `req.ip` — it keys on the socket peer and trusts the header only from a proxy
-# named in `TRUSTED_PROXY_IPS` — so a directly reachable API is no longer a
-# rate-limit bypass. It is still a forged-IP surface: every log line that
-# reports a client address reports whatever that client typed.
+# `apps/api/src/server.ts` passes `TRUSTED_PROXY_IPS` to Fastify's
+# `trustProxy`, so `req.ip` follows `X-Forwarded-For` only from an address you
+# named. The rate limiter does not read `req.ip` — it keys on the socket peer
+# and trusts the header only from a proxy named in `TRUSTED_PROXY_IPS` — so a
+# directly reachable API is no longer a rate-limit bypass. What is left of the
+# risk is a log line that reports whatever a direct client typed.
 #
 #   * Bind it to loopback: `HOST=127.0.0.1`.
 #   * Do not open port 4000 in the firewall.

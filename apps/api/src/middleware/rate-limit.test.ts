@@ -1,17 +1,20 @@
 /**
  * The keyGenerator is the security boundary of the rate limiter.
  *
- * It used to return `req.ip`. The server runs with `trustProxy: true`, which
- * makes `req.ip` follow `X-Forwarded-For` — so the "client address" the
- * limiter keyed on was a header the client wrote. Two exploits, one root
- * cause: `X-Forwarded-For: 127.0.0.1` put the caller in the allow-list
- * (exempt from the limit entirely), and a fresh random value per request
- * reset the bucket every time (unlimited requests, one per "client").
+ * It used to return `req.ip`, which the server let follow
+ * `X-Forwarded-For` — so the "client address" the limiter keyed on was a
+ * header the client wrote. Two exploits, one root cause:
+ * `X-Forwarded-For: 127.0.0.1` put the caller in the allow-list (exempt from
+ * the limit entirely), and a fresh random value per request reset the bucket
+ * every time (unlimited requests, one per "client").
  *
  * The fix: the key is the socket peer unless the peer is a proxy we
- * configured, and a configured proxy contributes the *right-most*
- * X-Forwarded-For entry — the address it appended — because the left-most
- * is what the client claimed about itself.
+ * configured, and a configured proxy contributes the first
+ * `X-Forwarded-For` entry found walking in from the right that is *not*
+ * also one of ours — every hop a proxy we run appended is skipped, so a
+ * second trusted proxy (a load balancer in front of the edge) does not
+ * collapse its callers into one bucket. The left-most entry is what the
+ * client claimed about itself, and a client can claim anything.
  *
  * These tests drive the real plugin through `app.inject`, with
  * `remoteAddress` standing in for the socket peer and headers for what the
@@ -128,5 +131,36 @@ describe('registerRateLimit key selection', () => {
     app = await buildApp({ perMinute: 1 });
     expect((await via('198.51.100.10')).statusCode).toBe(200);
     expect((await via('198.51.100.11')).statusCode).toBe(429);
+  });
+
+  it('walks past every proxy we run, not just the last one', async () => {
+    // A load balancer in front of the edge is a normal deployment, and it is
+    // where "take the right-most entry" stops being the client. The chain
+    // arrives at the API as `<client's own claim>, <real client>, <balancer>`:
+    // the right-most entry is the balancer, so keying on it would put every
+    // caller behind that balancer into one bucket — the outage, from the
+    // inside. The walk skips the balancer too, because it is ours.
+    app = await buildApp({ perMinute: 1, trustedProxyIps: ['10.0.0.1', '10.0.0.2'] });
+    const viaBalancer = (client: string) =>
+      get('10.0.0.1', { 'x-forwarded-for': `1.2.3.4, ${client}, 10.0.0.2` });
+
+    expect((await viaBalancer('198.51.100.10')).statusCode).toBe(200);
+    // A different caller behind the same balancer gets its own bucket.
+    expect((await viaBalancer('198.51.100.11')).statusCode).toBe(200);
+    // And the first one is over its own budget, not the balancer's.
+    expect((await viaBalancer('198.51.100.10')).statusCode).toBe(429);
+  });
+
+  it('keys on the peer when every hop in the chain is one of ours', async () => {
+    // The fallback. Nothing in the header is a client, so the peer is the most
+    // specific address left — and it is allow-listed, so this traffic is
+    // exempt. Stated as a test because "walked off the left end" must not mean
+    // "return undefined" or "return the last address anyway".
+    app = await buildApp({ perMinute: 1, trustedProxyIps: ['10.0.0.1', '10.0.0.2'] });
+    for (let i = 0; i < 3; i += 1) {
+      expect(
+        (await get('10.0.0.1', { 'x-forwarded-for': '10.0.0.2, 10.0.0.1' })).statusCode,
+      ).toBe(200);
+    }
   });
 });

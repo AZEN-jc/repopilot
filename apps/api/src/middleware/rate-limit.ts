@@ -17,20 +17,36 @@ export async function registerRateLimit(
     max: opts.perMinute,
     timeWindow: '1 minute',
     keyGenerator: (req) => {
-      // `req.ip` is deliberately not used: the server registers with
-      // `trustProxy: true`, which makes `req.ip` follow `X-Forwarded-For` —
-      // so it is exactly as forgeable as the header itself. The socket peer
-      // is the only address this process did not read off the request.
+      // `req.ip` is deliberately not used. This module is the one place that
+      // decides who the client is, and it decides from the socket rather than
+      // from a value another option can change. (`server.ts` sets `trustProxy`
+      // to this same list, so `req.ip` agrees — but that agreement is a
+      // consequence of two things being configured alike, not a dependency.
+      // The limiter was made independent of `trustProxy` precisely because
+      // `trustProxy` was wrong.)
       const peer = req.socket.remoteAddress ?? '';
-      if (trusted.has(peer)) {
-        // A proxy we run. The right-most entry is the one *it* appended,
-        // which is the client's address; the left-most is what the client
-        // claimed, and a client can claim anything.
-        const fwd = req.headers['x-forwarded-for'];
-        if (typeof fwd === 'string' && fwd.trim()) {
-          return fwd.split(',').pop()!.trim() || peer;
-        }
+      if (!trusted.has(peer)) return peer;
+
+      // A proxy we run. Walk in from the right, past every address that is also
+      // ours: the first one that is not is the client. The right-most entry is
+      // what the last proxy appended; the left-most is what the client claimed
+      // about itself, and a client can claim anything.
+      //
+      // Walking rather than taking `.pop()` matters as soon as two proxies we
+      // run are in the chain — a load balancer in front of the edge. The
+      // right-most entry is then the balancer, and keying on it would put every
+      // caller behind that balancer into one bucket, which is the outage this
+      // whole file exists to prevent. With one hop the walk returns the same
+      // entry `.pop()` did.
+      const fwd = req.headers['x-forwarded-for'];
+      if (typeof fwd !== 'string' || !fwd.trim()) return peer;
+      const chain = fwd.split(',').map((s) => s.trim()).filter(Boolean);
+      for (let i = chain.length - 1; i >= 0; i -= 1) {
+        const addr = chain[i]!;
+        if (!trusted.has(addr)) return addr;
       }
+      // Every hop named a proxy we run. Nothing in the header is a client, so
+      // the peer is the most specific thing left to key on.
       return peer;
     },
     // Matched against the key, which is the socket peer unless the peer is a

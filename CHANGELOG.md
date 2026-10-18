@@ -877,6 +877,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the full root script list, and the `Documentation` table picked up the
   five documents it was missing. Every `pnpm <script>` in the file is a
   real root script — `pnpm docs:check` reads them.
+- **`AuditPipeline.run()` can be driven without a network, and now has the
+  tests that needed.** `PipelineOptions` gained `fetcher` and
+  `metadataAnalyzer`, structurally typed (`PipelineFetcher` — the four methods
+  the pipeline actually calls — and `PipelineMetadata`) and defaulted to the
+  real GitHub-backed implementations. Nothing in `run()` does I/O itself, so a
+  fake makes the whole path offline; the shape is `FreeCheckSource`'s, added
+  for the same reason and recorded in R-35. It exists because `run()` had **no
+  test at all**: `MetadataAnalyzer` and `GitHubFetcher` were built inline
+  inside it, so the orchestration, the history-scan loop, the `contentSkipped`
+  count and the `degraded` flag were reachable only through a real audit
+  against a real repository.
+  `packages/core/src/pipeline.test.ts` — 8 cases, no network — covers the
+  mid-loop failure that keeps the commits already read *and* the secret they
+  contained (the fixed bug the absent test was hiding: a rate limit on the
+  sixth of twenty commits used to report `scannedCommits: 0` while five
+  commits had been fetched and discarded), that the loop stops at the failing
+  commit rather than continuing past it, that an unreadable history reports
+  zero rather than throwing, that `complete` is claimed only when the scan
+  reached the beginning of history and not when it merely filled the depth it
+  asked for, that a disabled scan costs zero requests, and that
+  `contentSkipped` and `degraded` reach `limitations`. Mutation-tested:
+  putting the `try` back outside the loop fails exactly one case and leaves
+  the other seven green, which is the evidence that the case discriminates
+  between the fixed and unfixed loop rather than merely exercising it.
+  (R-35, third instance.)
 
 ### Changed
 
@@ -1570,6 +1595,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker-compose.yml`, `scripts/compose-check.ts` and `docs/DEPLOYMENT.md`
   — because a comment that describes the pre-fix mechanism is how the next
   person reintroduces it. (R-24.)
+- **`trustProxy` now names the same list as the limiter, and the limiter's key
+  generator walks the header chain instead of taking the right-most entry.**
+  Two defects, one line of configuration and four lines of key selection.
+
+  `apps/api/src/server.ts` set `trustProxy: true`, which makes `req.ip` follow
+  `X-Forwarded-For` from *anyone*. Measured rather than inferred: with that
+  setting, a peer that was not trusted sending `X-Forwarded-For: 1.2.3.4` got
+  `req.ip = 1.2.3.4` — an address the caller typed. Nothing read `req.ip`, so
+  the effect was nil and the loopback-only published port was the only thing
+  keeping it that way. The previous round left it deliberately, on the
+  argument that changing the behaviour of a value no code path reads is a
+  decision for whoever reads it next. That argument does not survive the
+  measurement: the next reader gets an address the client chose and has no way
+  to know it, so the setting is not neutral, it is a trap laid for a colleague.
+  `server.ts` now passes `cfg.TRUSTED_PROXY_IPS`, the list the limiter already
+  uses, so `proxy-addr` walks in from the socket, skips every address we run
+  and stops at the first one we do not. A forged left-most entry is discarded
+  rather than believed: peer `172.28.0.10` with
+  `X-Forwarded-For: 1.2.3.4, 203.0.113.9` yields `req.ip = 203.0.113.9`, the
+  entry the edge appended — the same value the limiter keys on. An empty list
+  is the safe direction: nothing trusted, `req.ip` is the socket peer.
+
+  The key generator took the **right-most** `X-Forwarded-For` entry when the
+  peer was a trusted proxy. That is the client with one hop and the *second
+  proxy* with two — so a load balancer in front of the edge would have put
+  every caller behind it into a single bucket. The same outage as the compose
+  miswiring above, reached from the other direction, and one deployment away:
+  the previous round shipped the claim "keys on the *right-most* entry" in
+  three deployment files — `deploy/nginx/repopilot.conf`, `docs/DEPLOYMENT.md`
+  and `docs/deployment/Caddyfile.example` — true of the one-hop topology each
+  described and false the moment anyone added the load balancer those same
+  files already told them to put in front. It now walks in from the right,
+  skipping every address in the trusted list, and returns the first one that is
+  not ours; with one hop that is the same entry the right-most selection
+  returned, so nothing about the shipped topology changed. A chain where every
+  hop is ours falls back to the socket peer. Those three files, plus the
+  `trustProxy` paragraph in `docs/DEPLOYMENT.md` that claimed `true`, were
+  corrected here — a comment describing the pre-fix mechanism is how the next
+  person reintroduces it.
+
+  `rate-limit.test.ts` is 8 cases (was 6): the walk past two trusted hops and
+  the all-hops-are-ours fallback are new, and the walk is pinned by mutation —
+  reverting it to the right-most selection fails exactly one case and leaves
+  the other seven green. `api.integration.test.ts` gained a `GET /__ip` route
+  registered in its `beforeAll`, asserting the behaviour rather than the
+  option: a forged header from an untrusted peer is ignored, and a trusted
+  peer's header yields the entry the edge appended. The option is not readable
+  from outside — `app.initialConfig` carries only a fixed subset, and the
+  validated options sit behind a private symbol — which is just as well, since
+  the behaviour is the part that matters: a one-word revert to `true` now fails
+  a test instead of passing silently. The residual is unchanged and deliberate:
+  a *trusted* proxy that omits the header still exempts its own traffic, which
+  is what keeps our own health checks unthrottled, and is backstopped by
+  `TRUSTED_PROXY_IPS` plus `pnpm compose:check` rather than closed in code.
+  (R-24.)
 
 ### Fixed
 

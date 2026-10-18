@@ -798,21 +798,28 @@ count should read `Report.securityFindings`, not the diff.
 
 **Severity:** High.
 **Status:** **Fixed 2026-10-16 — the key is the socket peer, not `req.ip`,
-and the allow-list is no longer reachable by writing a header.** Three
-things remain, all of them below: a *trusted* proxy that omits the header
-still exempts itself; the shipped compose stack named loopback while its
-edge arrived over the bridge, which was a live shared-bucket outage until a
-second pass the same day pinned the address; and `trustProxy: true` still
-makes `req.ip` follow the header for anything that reads it.
+and the allow-list is no longer reachable by writing a header.** The three
+follow-ups that first pass left behind were closed the same day: the shipped
+compose stack named loopback while its edge arrived over the bridge, which
+was a live shared-bucket outage until a second pass pinned the address; the
+key generator took the right-most header entry, which silently collapses
+every caller behind a second trusted hop and was one deployment away from
+being shipped; and `trustProxy: true` let `req.ip` follow the header from
+anyone, which no longer has a reader today but was a loaded gun pointed at
+the next one. `server.ts` now passes `cfg.TRUSTED_PROXY_IPS` instead, so
+`req.ip` and the limiter agree by construction. What remains is one design
+choice rather than a defect — a *trusted* proxy that omits the header exempts
+its own traffic, backstopped by configuration and by a gate — and it is
+described below as such.
 
 The `keyGenerator` used to read the header first and `req.ip` as a
 fallback, and the `allowList` was matched against the **key**, not
 against `req.ip` (`@fastify/rate-limit@10.3.0` does
 `params.allowList.indexOf(key)`, `index.js:233`). Two doors followed:
 
-1. **The forgeable one.** `apps/api/src/server.ts` sets `trustProxy: true`,
-   so Fastify believes `X-Forwarded-For` from anyone — and `req.ip` follows
-   it. Any client that can reach the API directly could send
+1. **The forgeable one.** `apps/api/src/server.ts` set `trustProxy: true`,
+   so Fastify believed `X-Forwarded-For` from anyone — and `req.ip` followed
+   it. Any client that could reach the API directly could send
    `X-Forwarded-For: 127.0.0.1` and be exempt from the limit entirely, or a
    fresh random value per request and reset the bucket every time. Both
    were the same defect: the "client address" was a header the client wrote.
@@ -829,30 +836,79 @@ new `TRUSTED_PROXY_IPS` env var, defaulting to loopback) and keys on the
 socket peer — `req.socket.remoteAddress`, the one address this process did
 not read off the request. `req.ip` is deliberately not used, for the reason
 in door 1. When the peer *is* a configured trusted proxy, the key is the
-**right-most** `X-Forwarded-For` entry: the one the proxy appended, which is
-the client's address; the left-most is what the client claimed about itself.
+first `X-Forwarded-For` entry found walking in from the right that is **not**
+also one of ours: every address a proxy we run appended is skipped, and the
+first one left is the client. The left-most entry is what the client claimed
+about itself, and a client can claim anything.
+
+Walking rather than taking the right-most entry is not decoration, and this
+is the part the first pass got wrong. The right-most entry is what the *last*
+proxy appended. With two hops we run — a load balancer in front of the edge,
+a normal deployment — that is the balancer, so every caller behind it lands
+in one bucket. That is the same outage as the compose miswiring below,
+reached from the other direction, and it was one deployment away: the first
+pass shipped the claim "keys on the *right-most* entry" in three deployment
+files — `deploy/nginx/repopilot.conf`, `docs/DEPLOYMENT.md` and
+`docs/deployment/Caddyfile.example` — true of the one-hop topology each of
+them described, and false the moment anyone added the load balancer those
+same files already told them to put in front. With one hop the walk returns
+exactly what the right-most entry did, so nothing about the shipped topology
+changed.
+
 The `allowList` is now `[...trusted]`, matched against a key that is the
 peer unless the peer is trusted — so writing `X-Forwarded-For: 127.0.0.1`
 from an untrusted peer keys the caller by their own address and limits them
-like everyone else. Five tests in `apps/api/src/middleware/rate-limit.test.ts`
-drive the real plugin through `app.inject` with a faked socket peer: peer
-budget, forged header, right-most selection, header-forged allow-list, and
-the proxy's own exemption.
+like everyone else. Eight tests in
+`apps/api/src/middleware/rate-limit.test.ts` drive the real plugin through
+`app.inject` with a faked socket peer: the peer budget, a forged header, the
+right-most entry with one trusted hop, the walk past two, the
+all-hops-are-ours fallback, the header-forged allow-list, the proxy's own
+exemption, and both directions of the compose edge. The walk is pinned by
+mutation rather than by reading: replacing it with the old right-most
+selection fails exactly one test and leaves the other seven green.
 
-**Accepted residual, by design.** A *trusted* proxy that forwards no
-`X-Forwarded-For` still keys every request by the proxy's own address, and
-the proxy is allowListed — so the limiter is off for that traffic, exactly
-as before. What changed is that the exemption now requires the operator to
-have named the proxy in `TRUSTED_PROXY_IPS`, and the shipped configurations
-set the header: `deploy/nginx/repopilot.conf` sets
+**The one residual, and why it is a choice rather than a defect.** A
+*trusted* proxy that forwards no `X-Forwarded-For` still keys every request
+by the proxy's own address, and the proxy is allowListed — so the limiter is
+off for that traffic, exactly as it was before the fix. This is deliberate,
+and it is the whole reason the allow-list exists: our own proxy reaching us
+directly (health checks, internal calls, the compose edge talking to the API)
+is not a client to throttle, and the process cannot tell "my proxy, no client
+to report" from "my proxy, forgot the header". Every fix that removes the
+exemption removes it for the health check too.
+
+So the residual is not closed in code; it is **backstopped in two parts**,
+and the two parts are only useful together:
+
+1. **Configuration names the proxy.** The exemption is no longer reachable by
+   accident. It requires an operator to have written the proxy's address into
+   `TRUSTED_PROXY_IPS`; the default is loopback, which is the built-in
+   compose topology's *edge* address only because the second pass pinned it.
+   A deployment behind nginx or Caddy sets the variable to the proxy's
+   address, or every client is keyed by the proxy and shares one bucket —
+   an availability failure, not a bypass, and `.env.example` says so with
+   that caveat.
+2. **A gate holds the configuration in place.** `scripts/compose-check.ts`
+   fails the build if the header line is removed, if the API is re-published
+   on every host interface, if the subnet stops being pinned, if `web`'s
+   pinned address and `api`'s `TRUSTED_PROXY_IPS` stop naming the same
+   `${REPOPILOT_EDGE_IP:-172.28.0.10}` literal, or if `api`'s `HOST` stops
+   being `0.0.0.0` (a dual-stack listener reports the peer as
+   `::ffff:<addr>`, which would not match and would reproduce the shared
+   bucket silently). Seven mutations of `docker-compose.yml`, one per way to
+   break the wiring, each exit 1 with the message it is designed to produce.
+
+Part 1 without part 2 is a comment nobody reads; part 2 without part 1 would
+be gating a value nobody needs. `deploy/nginx/repopilot.conf` sets
 `X-Forwarded-For $proxy_add_x_forwarded_for` with a comment saying why the
-line must not be removed, `docker-compose.yml` publishes the API on
-`127.0.0.1:4000:4000` so the direct-reach door stays shut, and
-`scripts/compose-check.ts` fails if the header line is removed or the API is
-re-published on every host interface. A deployment behind nginx or Caddy
-must set `TRUSTED_PROXY_IPS` to the proxy's address, or every client is
-keyed by the proxy and shares one bucket — documented in `.env.example`
-with that caveat.
+line must not be removed, and `docker-compose.yml` publishes the API on
+`127.0.0.1:4000:4000` so the direct-reach door stays shut. The behaviour
+itself is pinned by
+`exempts a trusted proxy that forwards no X-Forwarded-For` in
+`apps/api/src/middleware/rate-limit.test.ts` and by
+`keys on the peer when every hop in the chain is one of ours`, so a change
+that quietly stopped exempting the proxy — and therefore started throttling
+our own health checks — would fail the suite rather than the deployment.
 
 **The first pass shipped a hole of the same shape, and a second pass closed
 it.** The fix above added `TRUSTED_PROXY_IPS` and then left the shipped
@@ -876,24 +932,44 @@ that subnet (`web.networks.default.ipv4_address`), and `api`'s
 `TRUSTED_PROXY_IPS` names the same `${REPOPILOT_EDGE_IP:-172.28.0.10}`
 literal.
 
-`scripts/compose-check.ts` now fails if those three disagree, if the subnet
-stops being pinned, or if `api`'s `HOST` stops being `0.0.0.0` — a
-dual-stack listener reports the same peer as `::ffff:<addr>`, which would
-not match and would reproduce the shared bucket silently. Seven mutations of
-`docker-compose.yml`, one per way to break the wiring, each exit 1 with the
-message it is designed to produce.
+`scripts/compose-check.ts` fails when any of those three disagree. The gate,
+what it checks, and its seven mutations are set out under "The one residual"
+above rather than repeated here.
 `apps/api/src/middleware/rate-limit.test.ts` pins both directions of the
 mechanism: with the edge's address named, two callers get two buckets; with
 the built-in default, the same two collapse into one.
 
-**A third thing, recorded rather than fixed.** `apps/api/src/server.ts`
-still sets `trustProxy: true`, so `req.ip` follows `X-Forwarded-For` from
-anyone. Nothing reads `req.ip` today — the limiter keys on the socket peer —
-so this is a loaded gun rather than a wound, and the API's loopback-only
-published port is what keeps it unloaded. Setting `trustProxy` to
-`cfg.TRUSTED_PROXY_IPS` would make `req.ip` agree with the limiter and was
-not done, because it changes the behaviour of a value no code path reads:
-the next reader of `req.ip` is the one who should decide.
+**The third follow-up: `trustProxy` now names the same list.** `server.ts`
+used to set `trustProxy: true`, which makes `req.ip` follow
+`X-Forwarded-For` from anyone — measured rather than inferred: with that
+setting, a peer that was not trusted sending `X-Forwarded-For: 1.2.3.4` got
+`req.ip = 1.2.3.4`, an address the caller typed. Nothing read `req.ip`, so
+the effect was nil, and the loopback-only published port was the only thing
+keeping it that way. A loaded gun rather than a wound.
+
+The first pass left it, on the argument that changing the behaviour of a
+value no code path reads is a decision for whoever reads it next. That
+argument does not survive the measurement. With `trustProxy: true` the next
+reader of `req.ip` gets an address the client chose and has no way to know
+it; a value that is wrong today and will be believed tomorrow is not neutral,
+it is a trap laid for a colleague. So `server.ts` now passes
+`cfg.TRUSTED_PROXY_IPS` — the same list the limiter uses — and `proxy-addr`
+walks in from the socket, skips every address we run, and stops at the first
+one we do not. A forged left-most entry is discarded rather than believed:
+peer `172.28.0.10` with `X-Forwarded-For: 1.2.3.4, 203.0.113.9` yields
+`req.ip = 203.0.113.9`, the entry the edge appended, which is the same value
+the limiter keys on. An empty list is the safe direction — nothing trusted,
+so `req.ip` is the socket peer — which means an operator who names no proxy
+gets the conservative reading rather than the permissive one.
+
+Pinned as behaviour rather than as a stored option:
+`apps/api/src/tests/api.integration.test.ts` registers a `GET /__ip` route in
+its `beforeAll` and asserts that a forged header from an untrusted peer is
+ignored, and that a trusted peer's header yields the entry the edge appended.
+The option itself is not readable from outside — `app.initialConfig` carries
+only a fixed subset and the validated options sit behind a private symbol —
+which is just as well, because the behaviour is the part that matters. A
+one-word revert to `true` now fails that test instead of passing silently.
 
 **Why it is High rather than Low.** R-03 is the reason the limiter exists at
 all: anonymous GitHub access is 60 requests/hour per IP, and the four free
@@ -1914,9 +1990,11 @@ deliberately left open.
 
 **Severity:** Medium
 **Likelihood:** Certain — measured on 2026-10-04
-**Status:** Fixed 2026-10-04 for `free-check.test.ts`. The class is not swept: a
-test that rebuilds the logic it means to check is invisible to every existing
-gate and nothing in CI looks for it, which the entry records as its residual.
+**Status:** Fixed 2026-10-04 for `free-check.test.ts`, and 2026-10-16 for the
+`AuditPipeline` orchestration (both below). The class is not swept: a test that
+rebuilds the logic it means to check, or a module with no seam to test it
+through, is invisible to every existing gate and nothing in CI looks for it,
+which the entry records as its residual.
 
 **What happens.** `free-check.test.ts` opened with a `describe('FreeCheck
 heuristics')` block whose cases built their own `README_NAMES` set, their own
@@ -1976,8 +2054,9 @@ gave the same answer and the case was green for a reason it did not state.
 The fixture order was changed until the mutation died, which is the only
 evidence that a case discriminates between the two rules.
 
-**Residual risk.** Only this module was re-examined. The same shape — a test
-that rebuilds the logic it means to check — is invisible to every existing
+**Residual risk.** Three modules were re-examined, not the codebase. The same
+shape — a test that rebuilds the logic it means to check, or a collaborator
+built inline so no test can substitute it — is invisible to every existing
 gate, and nothing in CI looks for it. `pnpm -r test` counts cases, not
 whether they can fail.
 
@@ -1993,6 +2072,39 @@ if `toSecretFindings` changed its id format the tests would keep passing, and
 that is the property this entry is about. Recorded rather than fixed, because
 this entry's own lesson is that the fix is a rewrite of the helper plus a
 mutation to prove the new version can fail — not a substitution of one call.
+
+**A third instance, found and fixed 2026-10-16.** The same missing seam as the
+first instance, in the same package, with the opposite outcome. `AuditPipeline`
+built `MetadataAnalyzer` and `GitHubFetcher` inline inside `run()`, exactly as
+`FreeCheckRunner` did, so `run()` had **no test at all** — not a tautological
+one, none. Nothing in `packages/core/src` mocked the network, and the only
+route to the pipeline's orchestration was a real audit against a real
+repository.
+
+The gap was real rather than theoretical because it sat on a fixed bug.
+`scanHistory` used to catch its failure *outside* the commit loop, so a rate
+limit on the sixth of twenty commits threw away the five already read: the
+report said `scannedCommits: 0` and a note that history could not be read,
+while five commits had been fetched, scanned and found clean. That was fixed
+by moving the `try` inside the loop and keeping what was read — four lines,
+and with no test on the loop, nothing would have noticed if it came back.
+
+**The seam was the same one, so the fix is the same one.** `PipelineOptions`
+gained `fetcher` and `metadataAnalyzer`, structurally typed
+(`PipelineFetcher`, `PipelineMetadata`) and defaulted to the real
+implementations — the `FreeCheckSource` pattern, applied to the pipeline.
+Nothing in `run()` does I/O itself; it calls four methods on the fetcher and
+one on the metadata analyzer, so a fake makes the whole path offline.
+`packages/core/src/pipeline.test.ts` drives it: the mid-loop failure keeps the
+two commits it read *and* the secret they contained, the loop stops rather
+than continuing past the failure, an unreadable history reports zero rather
+than throwing, completeness is claimed only when the scan reached the
+beginning of history, a disabled scan costs zero requests, and the
+`contentSkipped` and `degraded` values reach `limitations`. Mutation-tested
+the same way as the free-check cases: restoring the pre-fix shape — the
+`try` back outside the loop — fails exactly the first case and leaves the
+other seven green, which is the evidence that the case discriminates between
+the fixed and unfixed loop rather than merely exercising it.
 
 **Related.** R-26 (a check that never runs is indistinguishable from one that
 passes), R-27 (a check that can never pass), D-034 (the scope of a check is

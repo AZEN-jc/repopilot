@@ -272,6 +272,11 @@ describe('API integration', () => {
       databaseUrl: 'file:./data/test-api-integration.db',
     };
     app = await buildApp(deps);
+    // A route that reports `req.ip`, so `trustProxy` can be asserted as a
+    // behaviour rather than as a stored option. Registered here rather than in
+    // `buildApp` because it exists only to make that one observable; Fastify
+    // accepts routes up to the first `ready()`.
+    app.get('/__ip', async (req) => ({ ip: req.ip }));
     await app.ready();
   });
 
@@ -286,6 +291,34 @@ describe('API integration', () => {
     expect(body.status).toBe('ok');
     expect(body.paymentMode).toBe('mock');
     expect(body.database).toBe('ok');
+  });
+
+  it('does not believe `X-Forwarded-For` from a peer it was not told to trust', async () => {
+    // `trustProxy` was `true`, which makes `req.ip` follow `X-Forwarded-For`
+    // from anyone: this request would have reported `1.2.3.4`, an address the
+    // caller typed. The rate limiter never reads `req.ip` — it keys on the
+    // socket peer and walks the trusted list itself — so the defect had no
+    // visible effect anywhere, which is exactly why it needs an assertion: a
+    // one-word change back to `true` would break nothing else in this suite.
+    const forged = await app.inject({
+      method: 'GET',
+      url: '/__ip',
+      remoteAddress: '203.0.113.7',
+      headers: { 'x-forwarded-for': '1.2.3.4' },
+    });
+    expect(forged.json()).toEqual({ ip: '203.0.113.7' });
+
+    // And from a peer it *was* told to trust — loopback, the built-in default —
+    // it reports the entry the edge appended, not the left-most one the client
+    // claimed about itself. So `req.ip` is the same address the limiter keys
+    // on, rather than a value the caller chose.
+    const viaEdge = await app.inject({
+      method: 'GET',
+      url: '/__ip',
+      remoteAddress: '127.0.0.1',
+      headers: { 'x-forwarded-for': '1.2.3.4, 203.0.113.9' },
+    });
+    expect(viaEdge.json()).toEqual({ ip: '203.0.113.9' });
   });
 
   it('GET /api/v1/capabilities returns the schema', async () => {

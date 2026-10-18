@@ -36,9 +36,14 @@ example.com {
     # `reverse_proxy` sets X-Forwarded-For itself, and appends to an existing
     # one rather than replacing it, which is the behaviour the API needs: its
     # rate limiter reads the header only when the socket peer is a proxy named
-    # in `TRUSTED_PROXY_IPS`, and keys on the *right-most* entry — the one Caddy
-    # appended, i.e. the real client, not the left-most one the client claimed
-    # about itself.
+    # in `TRUSTED_PROXY_IPS`, and walks the chain in from the right, skipping
+    # every address it has been told is ours. The first entry that is not ours
+    # is the client — here, the one Caddy appended — so a client cannot choose
+    # its own bucket by claiming an address on the left.
+    #
+    # Appending is what makes a second hop safe. Put a load balancer in front of
+    # this host and the chain becomes `client, <ours>`: the walk skips both and
+    # still keys on the client.
     #
     # The default `TRUSTED_PROXY_IPS` is loopback, which is correct here
     # because the `reverse_proxy` targets below are `127.0.0.1:4000`. Point
@@ -109,12 +114,12 @@ example.com {
 # =============================================================================
 # WARNING — the API must not be reachable from the internet.
 #
-# `apps/api/src/server.ts` sets `trustProxy: true`, so Fastify's `req.ip`
-# follows `X-Forwarded-For` from anyone. The rate limiter does not read
-# `req.ip` — it keys on the socket peer and trusts the header only from a proxy
-# named in `TRUSTED_PROXY_IPS` — so a directly reachable API is no longer a
-# rate-limit bypass. It is still a forged-IP surface: every log line that
-# reports a client address reports whatever that client typed.
+# `apps/api/src/server.ts` passes `TRUSTED_PROXY_IPS` to Fastify's
+# `trustProxy`, so `req.ip` follows `X-Forwarded-For` only from an address you
+# named. The rate limiter does not read `req.ip` — it keys on the socket peer
+# and trusts the header only from a proxy named in `TRUSTED_PROXY_IPS` — so a
+# directly reachable API is no longer a rate-limit bypass. What is left of the
+# risk is a log line that reports whatever a direct client typed.
 #
 #   * Bind it to loopback: `HOST=127.0.0.1`.
 #   * Do not open port 4000 in the firewall.

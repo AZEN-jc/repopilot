@@ -85,14 +85,11 @@ services:
       # `curl http://127.0.0.1:4000/health` on the host.
       #
       # Publishing the API on every interface would make it a second, unchecked
-      # entry point. `trustProxy: true` (`server.ts`) still makes `req.ip`
-      # follow `X-Forwarded-For` from anyone, so a direct client can forge the
-      # address that every log line reports. The rate limiter is no longer
-      # among the things that would be fooled — it keys on the socket peer and
-      # reads the header only from a peer in `TRUSTED_PROXY_IPS`
-      # (`middleware/rate-limit.ts`, R-24) — but the edge is the only place
-      # supposed to see this traffic, and a loopback binding is what makes that
-      # true rather than merely intended.
+      # entry point. `req.ip` follows `X-Forwarded-For` only from an address
+      # named in `TRUSTED_PROXY_IPS` (`server.ts`), so a direct client can no
+      # longer choose the address every log line reports — but the edge is
+      # still the only place supposed to see this traffic, and a loopback
+      # binding is what makes that true rather than merely intended.
       - "127.0.0.1:4000:4000"
     depends_on:
       db:
