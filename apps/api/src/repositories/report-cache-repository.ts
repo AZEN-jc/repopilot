@@ -72,7 +72,9 @@ export class ReportCacheRepository {
     const r = await this.db.pool.query<{
       key: string;
       key_version: string;
-      report: string;
+      // `unknown`, not `string`: a JSONB column arrives parsed. Typing it as a
+      // string is what let `JSON.parse(row.report)` typecheck while being wrong.
+      report: unknown;
       commit_sha: string;
       created_at: string;
       expires_at: string;
@@ -89,7 +91,17 @@ export class ReportCacheRepository {
     return {
       key: row.key,
       keyVersion: row.key_version,
-      report: JSON.parse(row.report),
+      // Postgres stores this column as `JSONB` (`db/client.ts`), so node-postgres
+      // has already parsed it into an object by the time it reaches here.
+      // SQLite stores it as `TEXT`, so it arrives as a string. The two shapes
+      // are not interchangeable: `JSON.parse` of an object throws
+      // `SyntaxError: "[object Object]" is not valid JSON`, which surfaced as
+      // `UPSTREAM_FAILED` — retryable, so it burned the whole attempt budget and
+      // then failed the job. Every cached audit on Postgres, i.e. every repeat
+      // audit, and it never fired in the suite because the only tests that reach
+      // this repository inject a fake. `job-repository.ts` already handles both
+      // shapes for `jobs.report`; this is the same two-line guard.
+      report: typeof row.report === 'string' ? JSON.parse(row.report) : row.report,
       commitSha: row.commit_sha,
       createdAt: row.created_at,
       expiresAt: row.expires_at,

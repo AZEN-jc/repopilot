@@ -329,6 +329,37 @@ export const ReportSchema = z.object({
    */
   fixtureFindings: z.array(FindingSchema).default([]),
   /**
+   * Reproducibility findings — CI, test script, run script, build path,
+   * lockfile, `.env.example`, `.gitignore`.
+   *
+   * **This field exists because its absence made a release gate lie.** The
+   * quality contract answers "is a CI workflow declared?" by asking whether the
+   * rule `CI-001` appears in the report's findings, and it operates on the five
+   * arrays `collectFindings` reads. The builder computed this category and then
+   * passed it only to `collectBlockers` (which keeps critical/high) and to the
+   * score. These rules fire at medium and low, so they reached neither: on a
+   * repository with no CI, no test script and no build path at all, the contract
+   * reported `ci.workflow => pass`, `testing.test-script => pass` and
+   * `release.build-path => pass`. Measured, not inferred — a report built for a
+   * one-file repository carried zero occurrences of all six rules.
+   *
+   * Defaults to empty so a report written before this field existed still
+   * parses. On such a report the contract's answers are what they always were;
+   * the field is what makes them meaningful for a current one.
+   */
+  reproducibilityFindings: z.array(FindingSchema).default([]),
+  /**
+   * Deployment findings — the reproducibility subset that is specifically
+   * about shipping, plus the web3 ones.
+   *
+   * Same reason as `reproducibilityFindings`, and same history: computed,
+   * routed into `collectBlockers` and the score, and never written down, which
+   * is why `release.build-path` could pass for a repository with neither a
+   * Dockerfile nor a start script. Carried separately from the other array
+   * because the builder's split between them is part of the report's shape.
+   */
+  deploymentFindings: z.array(FindingSchema).default([]),
+  /**
    * The same findings, grouped by (file, rule) for reading.
    *
    * A derived view of `fixtureFindings`, stored rather than computed on

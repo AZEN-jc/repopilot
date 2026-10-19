@@ -75,12 +75,68 @@ Active risks the team is aware of and how they are mitigated.
   — A `main`/`master` guess put every non-standard repository on one cache entry
 - [R-46](#r-46--a-completed-audit-was-re-served-to-anyone-who-knew-its-idempotency-key)
   — The completed-row short-circuit ran before payment verification
+- [R-47](#r-47--a-forged-x-payment-returned-a-paid-report-for-nothing)
+  — The branch checked that the header *named* the payment, not that it proved it
+- [R-48](#r-48--the-quality-contract-answered-pass-about-findings-the-report-never-carried)
+  — Two computed categories were never written into the report the contract reads
+- [R-49](#r-49--every-cached-audit-on-postgres-failed-retryably-forever)
+  — `JSON.parse` on a JSONB column that the driver had already parsed
+- [R-50](#r-50--does-this-file-exist-was-asked-of-the-files-the-audit-chose-to-read)
+  — Existence checks ran on the filtered list, so a large lockfile was "missing"
+- [R-51](#r-51--the-price-gate-read-six-of-the-seven-places-a-price-is-stated)
+  — The MCP binary's own fallback price was not in the list
+- [R-52](#r-52--the-compose-secret-rule-compared-the-value-not-the-key)
+  — The rule could only fire if a value contained the text `PASSWORD=`
+- [R-53](#r-53--the-mcp-binary-guessed-at-its-own-configuration)
+  — A misspelled `PAYMENT_MODE` became a free-audit server, silently
+- [R-54](#r-54--a-web3-finding-appeared-twice-in-blockers-and-twice-in-the-task-list)
+  — `collectBlockers` was handed the same findings through two arrays
+- [R-55](#r-55--two-different-credentials-in-one-file-produced-one-history-finding)
+  — The dedupe key used a constant `reason`, not the line's text
+- [R-56](#r-56--an-idempotency-key-was-a-global-namespace-with-no-binding)
+  — Same key, different body, and the other repository's job came back
+- [R-57](#r-57--payment-challenges-and-receipts-live-in-process-memory)
+  — Accepted: correct for one replica, broken for two
+- [R-58](#r-58--two-contract-checks-read-the-rule-did-not-run-as-the-rule-passed)
+  — Accepted: the contract has no way to say "not applicable"
+- [R-59](#r-59--an-added-line-starting-with-a-double-plus-was-read-as-a-file-header)
+  — The header filter was a prefix test, so `++x` was dropped and the count slipped
+- [R-60](#r-60--a-timestamp-tie-named-the-newer-commit-as-the-introduction)
+  — A stable sort kept GitHub's newest-first order for equal dates
+- [R-61](#r-61--a-truncated-tree-was-reported-as-an-unreadable-archive)
+  — Two facts shared one flag, so the map explained the wrong one
+- [R-62](#r-62--an-okx-buyer-saw-a-blank-page-when-capabilities-failed)
+  — The payment card was gated on a fetch whose failure is swallowed
+- [R-63](#r-63--two-documented-knobs-that-no-module-read)
+  — `FETCH_TIMEOUT_MS` and `ANALYSIS_TIMEOUT_MS` were advertised and ignored
+- [R-64](#r-64--an-assertion-that-could-not-fail)
+  — `expect(server).toBeTruthy()` under a name that promised a tool-list check
+- [R-65](#r-65--the-raw-failure-message-is-stored-and-served-to-anyone-with-the-job-id)
+  — Open: the 500 handler redacts, the failed-job poll does not
+- [R-66](#r-66--two-concurrent-first-uses-of-one-idempotency-key-answer-500)
+  — Open: check-then-insert, and the key is written in a second statement
+- [R-67](#r-67--an-unknown-payment-network-is-half-applied)
+  — Open: the challenge names the typo, the token and chain id are xlayer's
+- [R-68](#r-68--the-launch-checklist-reads-the-secret-list-from-before-the-split)
+  — Open: `check-secrets` and `security.no-secrets` disagree about fixtures
+- [R-69](#r-69--blockers-and-recommended-tasks-are-truncated-in-silence)
+  — Open: 25 and 12, with no total and no limitation line
+- [R-70](#r-70--shutdown-abandons-the-jobs-the-queue-already-accepted)
+  — Open: `stop()` refuses new work and drops the work it took
+- [R-71](#r-71--the-completed-write-is-the-one-status-transition-that-is-not-guarded)
+  — Open: three guarded transitions and one unguarded
+- [R-72](#r-72--health-reads-every-audit-report-on-sqlite-to-count-one-row)
+  — Open: `select().all().slice(-1)` on the health path
+- [R-73](#r-73--the-mcp-gate-passes-on-the-word-tools)
+  — Open: the step greps for a substring instead of parsing the response
+- [R-74](#r-74--the-free-check-guesses-main-and-a-test-pins-the-guess)
+  — Open: the tolerated metadata failure is the one that guesses the branch
 
 ---
 
 ## How to read this file
 
-Forty-five entries (`R-41` is unused; the numbering jumps). Every one of them
+Seventy-three entries (`R-41` is unused; the numbering jumps). Every one of them
 carries a `**Status:**` line as of 2026-10-08, and the line starts the line —
 a status folded into a `**Severity:**` line is invisible to a search and reads
 as no status at all, which is how three of them were lost until then. Five
@@ -262,12 +318,23 @@ path runs on both backends.
 
 **Severity:** Medium
 **Likelihood:** Medium
-**Status:** Mitigated by design — `CORS_ORIGINS` is required in production and
-`env:check` errors on `*`, so the development default cannot be the value in
-production: the variable has no default there to fall back to.
-**Mitigation:** `CORS_ORIGINS` is required in production; the default
-is `http://localhost:5173,http://localhost:3000` which is development
-only. `env:check` fails if `*` is present in production.
+**Status:** Mitigated by design — the gate is `RequiredInProduction` in
+`scripts/env-check.ts`, which errors when `CORS_ORIGINS` is unset in
+production, plus the rule that rejects `*`. The schema is not the control.
+**Mitigation:** `env:check` refuses to pass in production without
+`CORS_ORIGINS`, and refuses `*` anywhere in production.
+
+**This entry used to say the opposite about the schema**, and the sentence is
+worth keeping in view: it claimed "the variable has no default there to fall
+back to". `apps/api/src/config.ts` carries
+`.default('http://localhost:5173,http://localhost:3000')` unconditionally, so a
+process started in production *without* running the gate would serve those
+origins — the default is not scoped to development. The exposure is small (a
+browser at `localhost:5173` is the operator's own machine) and the gate does
+cover the deploy path this repository ships, which is why this is a correction
+and not a new risk. The lesson is the file's oldest one: a status line that
+names a control has to name the file that carries it, because a control credited
+to the wrong layer is a control nobody re-checks when that layer changes.
 
 ## R-08 — Prompt injection in README / source
 
@@ -2941,3 +3008,688 @@ names the most recent one, which is the one a fresh payment would present.
 different door), D-011 (why every POST gets its own challenge). The
 integration test is in `apps/api/src/tests/api.integration.test.ts`; moving
 the short-circuit back above the verification turns it red.
+
+## R-47 — A forged `X-PAYMENT` returned a paid report for nothing
+
+**Severity:** High
+**Likelihood:** Certain, and cheap: the value the gate compared against is
+printed in the 402 response body.
+**Status:** Fixed 2026-10-19 — the completed-row branch verifies the payment
+instead of parsing it.
+
+**What happened.** R-46 closed the *no-header* door on the completed row. The
+door beside it stayed open. That branch asked the adapter to **parse** the
+header (`readPaymentId`) and compared the result to `job.paymentId` — and
+`paymentId` is a value this service hands out in the 402 body. An envelope
+with `signature: "0x00"` and the right `payload.paymentId` therefore returned
+the report: no signature, no `from`, no amount, no time window, no nonce. The
+two doors are the same mistake at different strengths: *knowing a paymentId*
+was treated as *having paid*.
+
+**What the fix is.** The branch calls `adapter.verifyPayment`, which is the
+only thing in this codebase that checks an EIP-712 signature and burns a
+nonce. A receipt that is not `completed` falls through to the re-quote path,
+so a caller with a malformed or unsigned envelope is answered 402 — with a
+fresh challenge naming a *different* payment — rather than 200.
+
+**Why no test caught it.** Every payment test in the repository ran in mock
+mode, where `mock:<id>` is proof by construction and `verifyPayment` and
+`readPaymentId` agree on everything. The new case is in
+`apps/api/src/tests/okx-payment.test.ts` and needs three steps: quote under
+mock to learn the paymentId, pay it so the row reaches `completed`, then
+attack it under the `okx` rail with an unsigned envelope. Reverting the gate
+to the string comparison turns it red with `expected 200 to be 402`.
+
+**Related.** R-46, R-39, R-40.
+
+## R-48 — The quality contract answered `pass` about findings the report never carried
+
+**Severity:** High — the product's central claim is the release verdict.
+**Likelihood:** Certain for every repository; the question was only which
+checks lied.
+**Status:** Fixed 2026-10-19 — the two missing categories are written down.
+
+**What happened.** `collectFindings()` reads five arrays off `Report`. The
+builder computed `reproducibilityFindings` and `deploymentFindings`, passed
+them to `collectBlockers` (which keeps only critical/high) and to the score,
+and **never wrote them into the report**. Every contract rule phrased as "is
+this rule's finding present?" therefore answered `absent` for the rules that
+fire at medium or low — and those rules' polarity makes `absent` mean *pass*.
+
+Measured on a repository containing one README and nothing else: `CI-001`,
+`TEST-002`, `TEST-003`, `BUILD-001`, `BUILD-002` and `BUILD-003` appeared zero
+times in the report, and the contract returned `ci.workflow => pass`,
+`testing.test-script => pass`, `release.build-path => pass`. A repository with
+no CI, no test command and no build path was told it could ship.
+
+**What the fix is.** Both fields are in `ReportSchema` (defaulted to `[]`, so
+a stored report still parses), written by the builder, and read by
+`collectFindings`. `REPORT_VERSION` moved to 1.4: a field was added to a
+document consumers read.
+
+**What is still not honest, and why it is recorded rather than fixed.** The
+contract has no notion of *inapplicable*. `TEST-002` and `BUILD-002` only fire
+when a manifest exists, so a repository with no `package.json` at all still
+answers `pass` for "a test command is declared" — the rule did not run, and
+absence of a finding is read as success. Fixing that needs a positive signal
+in the report (a manifest record) or a third check status; both are larger
+than the defect's blast radius for the repositories this tool targets, all of
+which ship a manifest. `ci.workflow` and `release.build-path` do fail now for
+that repository, which is the half that had a rule that always fires.
+
+## R-49 — Every cached audit on Postgres failed, retryably, forever
+
+**Severity:** High — the entire paid path on the production database.
+**Likelihood:** Certain whenever `REPORT_CACHE_ENABLED=true` on Postgres.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `ReportCacheRepository.findByKey` did
+`JSON.parse(row.report)`. On SQLite the column is `TEXT` and comes back as a
+string; on Postgres it is `JSONB` and `node-postgres` hands back an **object**.
+`JSON.parse(object)` throws `SyntaxError: "[object Object]" is not valid JSON`.
+The throw happens inside the worker, is classified `UPSTREAM_FAILED` and
+marked **retryable**, so the job burns its whole attempt budget and lands in
+`failed` — a cache *read* turning into a failed audit, on every audit, for as
+long as the cache is on.
+
+**Why it survived.** The repository had no Postgres test. Every test of the
+cache used a fake repository, so the real class never met a real driver. The
+sibling `job-repository.ts:239` already handled the dual shape; this one was
+written by copying the SQLite branch and never exercised on the other backend.
+
+**What the fix is.** The same normalisation the job repository uses — parse
+only when the value is a string — plus a type that stops claiming `report:
+string` for a column that is not a string. Three cases in
+`apps/api/src/services/cache-service.test.ts` drive the real repository with a
+pool that behaves the way `node-postgres` does; restoring `JSON.parse` turns
+the Postgres one red.
+
+## R-50 — "Does this file exist?" was asked of the files the audit chose to read
+
+**Severity:** Medium — a high-severity false finding, and a silent false
+negative of the same origin.
+**Likelihood:** Any repository with a file over `MAX_FILE_BYTES` (1 MiB) or
+past `MAX_FILES`.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `filterFiles` drops binaries, noise directories and
+anything over the size cap. `analyzeReproducibility` was given that filtered
+list and asked it whether a lockfile exists. A repository with a 2 MiB
+`pnpm-lock.yaml` was told **"No lockfile detected" at high severity** — a
+finding a paid customer would act on, about a file they had committed. The
+same filter dropped a 2 MiB `.env`, which then appeared in **no count at
+all**: not read, and not reported as unread, so "no secrets found" covered a
+file nobody opened.
+
+**What the fix is.** The analyzer takes paths, and the builder passes
+`allPaths` — the unfiltered tree, which the pipeline already had for exactly
+this reason and used for documentation and hackathon checks. Files the cap
+kept out of selection are now counted (`unreadableBeforeFetch`) and included
+in the coverage limitation, which already said "or absent from the archive"
+and now says "files the tree listed" because that is what it means.
+
+**Verified.** With a 2 MiB lockfile and a 2 MiB `.env`: no lockfile finding,
+and `Content was truncated out of this audit: 2 of 4 files the tree listed
+could not be read`. Before the change the same probe produced the high
+severity blocker and no limitation.
+
+## R-51 — The price gate read six of the seven places a price is stated
+
+**Severity:** Medium — the defect it exists to prevent is a failed first sale.
+**Likelihood:** Low, but the gate is the only thing standing between a
+listing and a charge.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `readPriceStatements()` collected the API default,
+`.env.example`, the compose default, both marketplace listings and the
+registration table — and not `DEFAULT_PRICING.audit.amount`, which is what the
+**MCP binary** charges when `PRICE_AUDIT` is unset. Changing that `'1'` to
+`'0.55'` left `docs:check` reporting zero issues. The docstring above the
+function describes this exact failure mode (a buyer reads one number, signs
+another) and the list had a hole in it.
+
+**What the fix is.** A seventh statement, read with `required()` so a reworded
+constant fails loudly rather than silently dropping out of the list, and
+`EXPECTED_STATEMENTS` 6 → 7. Mutation-verified: the `'0.55'` change now fails
+with "stated 2 different ways".
+
+## R-52 — The compose secret rule compared the value, not the key
+
+**Severity:** Medium — a gate that could not fire, guarding the file that
+holds deployment credentials.
+**Likelihood:** Certain: no correct value could ever match.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** The rule was
+`/KEY=|SECRET=|PASSWORD=|TOKEN=/.test(v)` where `v` is the env **value**. It
+could only match a value that literally contained the text `PASSWORD=` — which
+no credential does. `MY_TOKEN: ghp_realtoken…` passed, and so did
+`POSTGRES_PASSWORD: repopilot` in this repository's own compose file. The
+irony is exact: the one real hardcoded credential in the file passed because
+its value does not contain the word `PASSWORD`.
+
+**What the fix is.** Match the **key** against
+`/(^|_)(KEY|SECRET|PASSWORD|TOKEN|CREDENTIAL|PASSWD)S?$/i`, and exempt only the
+`${VAR}` interpolation form. The rule now fires on the file, so the file was
+changed too: `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repopilot}`, same
+default, overridable. Mutation-verified both directions — a literal
+`GITHUB_TOKEN: ghp_…` fails the gate, and the shipped file passes.
+
+## R-53 — The MCP binary guessed at its own configuration
+
+**Severity:** Medium — a silent free-audit server, and an invalid number in a
+signed challenge.
+**Likelihood:** Any typo in `PAYMENT_MODE`, any non-numeric `PRICE_AUDIT`.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `cli.ts` resolved its mode as
+`PAYMENT_MODE === 'okx' ? 'okx' : 'mock'`. `PAYMENT_MODE=Okx`, `ok`, or any
+misspelling produced a server that hands out audits for free — no log line, no
+failed request, and `NODE_ENV=production` did not matter because this binary
+never ran the API's production guards (R-02). `PRICE_AUDIT` was passed through
+untouched, so `PRICE_AUDIT=abc` reached `toAtomic` and became `abc000000` in
+the 402 challenge: the first buyer would sign an authorization for something
+that is not a number.
+
+**What the fix is.** The environment read moved to `payment-env.ts`, a pure
+function of an environment object, and it refuses rather than guesses: an
+unknown `PAYMENT_MODE` is an error, `mock` with `NODE_ENV=production` is an
+error, `okx` with no `OKX_PAYMENT_ADDRESS` is an error, and `PRICE_AUDIT` must
+be a positive decimal with at most six places. `cli.ts` prints the message and
+exits 1. Eight cases in `payment-env.test.ts` cover the refusals.
+
+The API's own `PRICE_AUDIT` gained the same shape check in `ConfigSchema`,
+which is where the value enters the other process; `'0'` is refused as well,
+because a well-formed zero makes every audit free and is a deployment mistake
+far more often than an intent.
+
+## R-54 — A web3 finding appeared twice in `blockers` and twice in the task list
+
+**Severity:** Low — a crowded report, not a wrong verdict.
+**Likelihood:** Every web3 repository.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `deploymentFindings` is built as
+`[...repro subset, ...web3Findings.filter(f => f.id.startsWith('web3-'))]`, and
+`collectBlockers` was handed `deploymentFindings` **and** `web3Findings`. Every
+high-severity web3 finding was therefore in `blockers` twice, and
+`recommendedTasks` iterates `blockers`, so it appeared twice there as well —
+6 entries for 5 findings in the measured case, on a list capped at 25 and 12.
+
+**What the fix is.** Deduplicated by object reference. The duplication is
+literal — the same object sits in both arrays — so identity is exact, and an
+id-based merge would be wrong as soon as two genuinely different findings share
+an id (two contract directories with no deploy script are two findings).
+
+## R-55 — Two different credentials in one file produced one history finding
+
+**Severity:** Medium — a responder rotates the key they were told about and
+leaves the other one live.
+**Likelihood:** Any file holding more than one secret of the same kind.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** The history scanner deduplicated across commits by
+`${kind}::${file}::${reason}`, and `reason` is a **constant per pattern**
+(`'AWS access key ID pattern'`). Two AWS keys in one file therefore collapsed
+into one finding, contradicting the function's own docstring ("two
+introductions = two findings").
+
+**What the fix is.** The key is `${kind}::${file}::${line text}`. Two
+different secrets differ in the text; the same secret edited around keeps it,
+which is the case the dedupe exists for. The cost is that the *same* key on
+two lines of one file now produces two findings — over-reporting in the safe
+direction. New case in `history-scanner.test.ts`; restoring `hit.reason` turns
+it red (2 → 1).
+
+## R-56 — An `Idempotency-Key` was a global namespace with no binding
+
+**Severity:** Medium — cross-caller report access with a guessable key.
+**Likelihood:** Low in practice (the poll endpoint needs the jobId), but the
+key is client-chosen and often predictable.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `getByIdempotencyKey(key)` had no scope: any caller who
+presented a key that matched an existing job got that job — `jobId`, status
+and, on the completed path, the report. Submitting a different `repoUrl` under
+the same key returned the *other* repository's job. Reusing a key with a
+different body is not a retry; it is a collision, and it was answered as a
+successful retry.
+
+**What the fix is.** The stored `input` is compared to the incoming one
+(`repoUrl` normalised for trailing slash, whitespace and case; `mode`,
+`target`, `outputLanguage` and `includeLaunchCopy` exactly). A mismatch is
+`409 IDEMPOTENCY_KEY_REUSED`. That is also what keeps the unique index from
+turning the collision into a 500 inside `create`.
+
+**What is still true.** There is no caller identity in this flow, so a key
+remains a shared namespace: two callers who *deliberately* use the same key
+for the same request share a job. That is the semantics of the header, and
+closing it would need authentication, which this service does not have.
+
+## R-57 — Payment challenges and receipts live in process memory
+
+**Severity:** Medium
+**Likelihood:** Certain on a multi-replica deployment; zero on the shipped
+single-container compose.
+**Status:** **Accepted residual** — decided, not deferred by omission. R-42
+persisted the burned nonce; the challenge and the receipt did not follow.
+
+**What happens.** `OkxPaymentAdapter` keeps issued challenges and settled
+receipts in `Map`s inside the process. With one replica that is correct. With
+two behind a load balancer, a buyer's second request can land on the instance
+that did not issue the challenge: `verifyPayment` does not find it, and the
+route answers 402 `PAYMENT_NOT_SETTLED` for an authorization that is perfectly
+valid on chain. A client that treats 402 as terminal abandons a payment it has
+already signed.
+
+**Why it is recorded rather than fixed.** The fix is a table and a repository,
+mirroring `burned_nonces` — the third persistence layer in a payment path whose
+first two were added one defect at a time. The shipped topology is a single
+`api` container; `docs/DEPLOYMENT.md` does not describe a scaled deployment.
+Doing it now would be building for a shape nobody runs, and the honest signal
+is this entry rather than a half-built table. **If this service is ever run
+with more than one replica, this becomes a High and must be fixed first.**
+
+## R-58 — Two contract checks read "the rule did not run" as "the rule passed"
+
+**Severity:** Medium
+**Likelihood:** Any repository with no dependency manifest at all.
+**Status:** **Accepted residual** — the half that had an always-firing rule is
+fixed (R-48); this half needs a signal the report does not carry.
+
+**What happens.** `testing.test-script` and `release.build-path` are answered
+by the *absence* of `TEST-002` / `BUILD-002`. Those rules only fire when a
+`package.json` exists, so a repository with no manifest at all — a bare
+documentation repo, a Go project, a Rust project with no `Cargo.toml` at the
+root — answers `pass` for "a test command is declared" without anything having
+been checked. `release.build-path` is worse in one direction: it is
+`ok = noDocker.length === 0 || noRunScript.length === 0`, so a missing
+Dockerfile plus an inapplicable run-script rule reads as "has a build path".
+
+**Why it is recorded rather than fixed.** The contract is a pure function of a
+`Report`, and the report carries no evidence of *which* files exist — so
+"applicable" cannot be computed from it. The two ways out are a positive
+signal in the report (a manifest record, a `REPORT_VERSION` bump) or a third
+check status (`not_applicable`) threaded through every section. Both are
+larger than the defect, which only affects repositories that ship no manifest;
+`detectedStack` looks like a shortcut and is a display label, not a fact.
+
+## R-59 — An added line starting with a double plus was read as a file header
+
+**Severity:** Medium — a credential that is not reported, at the wrong line
+number when it is.
+**Likelihood:** Certain for any commit that adds a line whose own text begins
+with `++` — a counter increment, a `++i` in a loop header, a pre-increment
+assignment.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `addedLines()` decided what was a file header by prefix:
+`if (raw.startsWith('+++') || raw.startsWith('---')) continue`. In a unified
+diff an added line is written `+` followed by its text, so a line whose text
+starts with `++` produces `+++…` — indistinguishable from the `+++ b/file` header
+by prefix alone. Two consequences, both silent: the line was **never scanned**,
+and because it also skipped the `newLine += 1`, every finding below it in the
+same hunk was reported **one line early**.
+
+**What the fix is.** The header filter is positional now. A `@@` sets
+`inHunk = true` and a `diff --git` line clears it; outside a hunk nothing is
+content, inside one nothing is a header. Position is knowable from the diff —
+the hunk declares where it starts — and the prefix never was.
+
+**Verification.** `addedLines` case `reads an added line that starts with ++ as
+content, not as a header` asserts both halves at once: two added lines, at lines
+2 and 3. Restoring the prefix filter turns it red with
+`expected [ { line: 2, text: 'const b = 2;' } ] to deeply equal [ …(2) ]` —
+which is the miss *and* the off-by-one in one message.
+
+**Related.** R-55 (the other dedupe defect in this scanner). Both were found by
+reading the function against its own docstring rather than by a failing test.
+
+## R-60 — A timestamp tie named the newer commit as the introduction
+
+**Severity:** Medium — the one field a responder acts on.
+**Likelihood:** Low per repository, certain per rebase or scripted push: commit
+dates have second granularity, and two commits can share one.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `scanCommitsForSecrets` sorts oldest-first so that the
+dedupe keeps the commit that *introduced* a credential — "the one a responder
+needs", per its own comment. The sort was
+`[...commits].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))`, and
+`Array.prototype.sort` is stable, so two commits sharing a timestamp kept the
+order they arrived in. They arrive newest-first (that is GitHub's order), so the
+tie was won by the **newer** commit: the report named a commit that contains the
+secret rather than the one that added it, and history rewriting would start in
+the wrong place.
+
+**What the fix is.** `.reverse()` before the sort. With the input oldest-first,
+a stable sort leaves a tie oldest-first. A commit whose date could not be read
+now sorts last (`'9999'`) rather than first: an unknown date is not an ancient
+one, and preferring the dated commit is the only ordering that is not a guess.
+
+**Verification.** New case `keeps the older commit when two carry the same
+timestamp`, driving the input in GitHub's order with one shared date. Removing
+the `.reverse()` turns it red with
+`expected 'tidy config' to be 'add config'`.
+
+## R-61 — A truncated tree was reported as an unreadable archive
+
+**Severity:** Low — a false sentence in a shipped artifact, about the one thing
+the artifact is for.
+**Likelihood:** Certain for any repository large enough that GitHub truncates
+the tree.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `buildRepositoryMap` folds two different facts into one flag:
+`const degraded = Boolean(input.degraded) || Boolean(input.truncated)`. That is
+defensible for the flag — a map built from a truncated tree really is less
+complete — but the *sentence* the flag drives says something else entirely:
+"The archive could not be read (…), so content was fetched one file at a time
+(ADR D-017); the request cost was higher". A truncated tree therefore produced
+two limitation lines: the true one about truncation, and a false one claiming
+the archive failed and every file was fetched individually. Neither had
+happened.
+
+**What the fix is.** The limitation builder is handed the raw
+`Boolean(input.degraded)`; the artifact keeps the folded flag. One line, and the
+two facts stop sharing a sentence.
+
+**Verification.** The existing case `treats a truncated tree as degraded` now
+also asserts the false sentence is absent (`not.toContain('one file at a
+time')`, `not.toContain('archive')`). Restoring the folded flag turns it red
+with `expected 'Static analysis only — repository cod…' not to contain 'one
+file at a time'`. The flag assertion still passes, which is the point: the
+decision was right and the explanation was wrong.
+
+## R-62 — An OKX buyer saw a blank page when capabilities failed
+
+**Severity:** Medium — a dead end on the paid path, with no error to report.
+**Likelihood:** Low, and exactly the deployments that are hardest to debug: a
+proxy rule, an ad-blocker, a cold start, a partial outage.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `App.tsx` renders the payment instructions only when
+`caps?.paymentMode === 'okx'`. `caps` comes from `getCapabilities()` at mount,
+whose rejection is swallowed (`.catch(() => undefined)`). So when
+`/capabilities` was unreachable and `/audits` was not, an OKX buyer received a
+402, the app stored the `paymentId`, skipped the mock auto-pay (it branches on
+`challenge.mode`, which it had), rendered no card (it gated on `caps`, which it
+did not) — and showed nothing at all. No error, no instructions, no spinner.
+
+**What the fix is.** The mode the *challenge* names is remembered in state and
+preferred over the capabilities answer. The 402 body is the answer to this
+request; `caps` is a cached guess about the deployment.
+
+**Verification.** New case `capabilities 请求失败时，okx 买家仍然看到付款指引`
+drives `capabilities: 'network'` with `challengeMode: 'okx'` and asserts the CLI
+command is on screen. Restoring `caps?.paymentMode` turns it red with
+`Unable to find an element with the text: /onchainos payment pay …/`.
+
+## R-63 — Two documented knobs that no module read
+
+**Severity:** Low — but it is the class this file keeps writing entries about:
+a green tick over a setting that does nothing.
+**Likelihood:** Certain for anyone who copies `.env.example` and tunes the
+timeouts.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `.env.example` declared `FETCH_TIMEOUT_MS=30000` and
+`ANALYSIS_TIMEOUT_MS=120000` in its Limits block. Neither is read anywhere: the
+GitHub client's timeout is a compile-time constant in
+`packages/core/src/git/fetcher.ts`, and `JOB_TIMEOUT_MS` is the value that
+actually bounds a run. `ANALYSIS_TIMEOUT_MS` had already been removed from
+`scripts/env-check.ts` for this exact reason (R-39) — with a comment saying so —
+and the example file kept advertising it.
+
+**What the fix is.** Both lines are gone, replaced by a note naming the two real
+knobs and why the absent ones are not coming back under those names. The note is
+in the file rather than only in this entry because the file is what an operator
+reads.
+
+**Verification.** `pnpm env:check` and `docs:check` both still pass; no code
+path referenced either name (checked by searching the tree, not by assuming the
+comment in `env-check.ts` was complete).
+
+## R-64 — An assertion that could not fail
+
+**Severity:** Low.
+**Likelihood:** Certain, in the sense that it was already true.
+**Status:** Fixed 2026-10-19.
+
+**What happened.** `packages/mcp-server/src/index.test.ts` opened with
+`it('builds and registers tools')` whose body was
+`expect(server).toBeTruthy(); expect(toolNames(server).length).toBeGreaterThan(0)`.
+The first assertion cannot fail — `buildMcpServer` returns an object — and the
+second is implied by the two frozen-list cases below it, which compare the
+registration against `ADVERTISED_TOOLS` in both directions. The test's name
+promised a check of the tool list that three other tests were already making.
+
+**What the fix is.** Removed, with a comment saying what it claimed and which
+cases make the claim. A green tick that cannot go red is worse than no tick: it
+occupies the name of a check nobody then writes.
+
+## R-65 — The raw failure message is stored and served to anyone with the job id
+
+**Severity:** Low — disclosure of infrastructure detail to a caller who already
+holds the job id.
+**Likelihood:** Medium: every failed audit takes this path, and
+`classify()` passes through the message of whatever was thrown.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `audit-worker.ts:248` writes `error: auditErr.message` onto
+the job row; `GET /api/v1/audits/:jobId` returns it verbatim as
+`error.message` (`audits.ts:467`). The message is whatever the underlying
+library put in the error: a pg connection failure names host and port, an
+Octokit error carries the request it failed on, a Zod error carries the input
+shape. The 500 handler in `utils/errors.ts` deliberately answers a flat
+`Internal error`; this path has no such policy.
+
+**Why it is recorded rather than fixed.** The message is the only diagnostic a
+caller gets for a failed job, so removing it is a product decision, and
+filtering free text for "safe" substrings is the kind of control that fails
+open in exactly the cases nobody tested. The right shape is a fixed vocabulary
+keyed by `errorCode` — which is already on the row — plus the detail in the log.
+**Trigger:** the first failure whose message contains something an operator
+would not paste into a public ticket.
+
+## R-66 — Two concurrent first uses of one idempotency key answer 500
+
+**Severity:** Low — a spurious 500 on a retry, not a wrong answer.
+**Likelihood:** Low, and proportional to how often clients retry a POST that
+timed out, which is the case the header exists for.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `handleCreate` reads `getByIdempotencyKey`, then calls
+`create`, which inserts the row and *then* writes the key in a second statement
+(`job-service.ts:67-70`). Two requests racing on a fresh key both find nothing,
+both insert, and the second write hits `uq_jobs_idempotency_key`. Nothing
+catches it, so it surfaces as `Internal error` with status 500. The two-statement
+create has a second, narrower window: a crash between insert and update leaves a
+queued job with no key, and the client's retry then creates a second job.
+
+**Why it is recorded rather than fixed.** The fix is one insert carrying the key
+plus a catch that re-reads and returns the winner — but it changes the create
+path on both drivers, and proving it needs two concurrent requests against a
+real unique index, which the SQLite test setup cannot express without a second
+connection. **Trigger:** the first retry storm.
+
+## R-67 — An unknown payment network is half-applied
+
+**Severity:** Medium when it fires: the buyer is told to pay on a chain that
+does not exist.
+**Likelihood:** Low — it needs a typo in `OKX_PAYMENT_NETWORK`.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `OKX_PAYMENT_NETWORK` is `z.string().default('xlayer')` — no
+enum. `createChallenge` writes `network: this.opts.network` into the challenge
+(so the buyer's wallet is pointed at `xlayer2`, say) while taking the token
+address and `decimals` from `USDT_BY_NETWORK[network] ?? USDT_BY_NETWORK['xlayer']`,
+and `verifyPayment` derives the EIP-712 domain from `chainId: 196`. The result
+fails closed — a signature made for another chain does not verify — so no audit
+is given away; what is lost is the buyer's payment attempt, in their wallet,
+with no server-side signal that the configuration is wrong.
+
+**Why it is recorded rather than fixed.** The supported set is exactly the five
+keys of `USDT_BY_NETWORK`, so the fix is a one-line enum — but it makes an
+existing deployment carrying a name outside that set **refuse to start**, and
+that is a config-surface change worth deciding deliberately rather than
+appending to a batch. **Trigger:** the first live sale, or the first deployment
+that sets this variable to anything but `xlayer`.
+
+## R-68 — The launch checklist reads the secret list from before the split
+
+**Severity:** Low — an internal contradiction between two lines of one report.
+**Likelihood:** Certain for any repository with a fixture credential.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `buildLaunchChecklist(..., secretFindings, ...)` is handed
+`toSecretFindings(secretDrafts)` — the array *before* `split()` moved fixture
+paths out of it and before `enrichFindings` ran. `securityFindings`, the
+post-split array, is what the score, `collectBlockers` and the quality contract
+read. So a fake credential under `src/**/*.test.ts` makes `check-secrets` report
+`done: false` ("No committed credentials" not met) while
+`security.no-secrets` in the same report says `pass` and the score ignores it.
+One report, two answers, and the checklist is the one a human reads.
+
+**Why it is recorded rather than fixed.** Passing `securityFindings` would make
+the row count history and injection findings under a title that says *committed*
+credentials — a different claim, and a worse one. The precise fix is to pass the
+post-split secret subset, which needs a stable per-rule id on the enriched
+finding that this builder does not carry. **Trigger:** a customer asking why the
+checklist disagrees with the verdict, which is the first support ticket this
+row will produce.
+
+## R-69 — Blockers and recommended tasks are truncated in silence
+
+**Severity:** Low — a reader believes the list is complete when it is not.
+**Likelihood:** Certain above 25 blockers or 12 tasks.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `collectBlockers` ends in `.slice(0, 25)`
+(`builder.ts:396`) and `buildRecommendedTasks` breaks at 12
+(`builder.ts:420`). Neither emits a limitation, a total, or a "showing N of M".
+A repository with 40 high findings reads exactly like one with 25, and a reader
+who closes all 12 tasks believes the work is done. This is the same defect class
+as R-50 — a count that silently omits part of its population — in the one place
+the report presents itself as a work list.
+
+**Why it is recorded rather than fixed.** The count has to reach
+`buildLimitations`, whose signature is already seven positional parameters, and
+the honest fix is not the sentence but the *choice*: the sort is by severity
+only, so which 25 of 40 survive is arbitrary. Deciding that is a product
+question (top 25 by severity then by category? by file?) that a truncation note
+would paper over. **Trigger:** the first audit whose blocker count exceeds 25 —
+which the report itself can measure.
+
+## R-70 — Shutdown abandons the jobs the queue already accepted
+
+**Severity:** Low for the shipped topology: production refuses to start with the
+inline driver.
+**Likelihood:** Certain whenever the inline driver runs with more than one job
+queued at SIGTERM.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `InlineAuditQueue.stop()` sets `accepting = false`, then waits
+on `inFlight`. But `dispatch()`'s `.finally` only continues draining `pending`
+when `this.accepting` is still true (`inline-audit-queue.ts:180`), so from the
+moment shutdown begins, jobs already accepted and sitting in `pending` are never
+started — and `stop()` does not wait for them either, because it waits on
+`inflightPromises`, not on `pending.length`. The client already has a 202 and a
+`statusUrl`; the row stays `queued` and nothing moves it.
+
+**Why it is recorded rather than fixed.** "Refuse new work" and "finish accepted
+work" are two different flags, and splitting them changes the shutdown contract
+that `verify:release` exercises at the end of every run. The pg-boss driver is
+durable and unaffected, and production refuses the inline driver by config.
+**Trigger:** a dev or CI run that is killed with a backlog — or the inline
+driver ever being allowed outside dev.
+
+## R-71 — The completed write is the one status transition that is not guarded
+
+**Severity:** Low — last-writer-wins on a terminal state, with no log line.
+**Likelihood:** Low: needs two workers on one job, which needs a reclaim.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** Every other write in `AuditWorker` passes `expectedStatus`:
+the claim is guarded on `'queued'`, the failure write on `'processing'`. The
+completion write (`audit-worker.ts:216`) passes none, so it lands whatever the
+row says now — including over a row another worker reclaimed and is processing.
+Two workers can both write `completed`; the later one wins, and nothing records
+that a write was lost or that two workers disagreed about who owned the job.
+`JobRepository.update` documents the guard as the mechanism that keeps the state
+machine intact; one of its four transitions does not use it.
+
+**Why it is recorded rather than fixed.** Adding the argument is one line, but
+what the worker should *do* when the guarded write reports `updated: false` is
+the open question: with the guard, a late-finishing worker's report is dropped,
+which is only correct if the reclaim is guaranteed to produce one. That is
+R-44's invariant, and it deserves its own test rather than a one-line change at
+the end of a batch. **Trigger:** the first deployment with more than one worker.
+
+## R-72 — Health reads every audit report on SQLite to count one row
+
+**Severity:** Low.
+**Likelihood:** Certain on SQLite once the table is large; the cost grows with
+the bytes of every report ever written.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `JobRepository.list()` on SQLite does
+`select().from(jobs).all().slice(-limit)` (`job-repository.ts:149-154`) — every
+column of every row, `report_json` included, materialised in memory to answer
+`list(1)`. The only caller is `server.ts:237`, on the health path. Postgres takes
+the same call as `.limit(limit)` and pays nothing.
+
+**Why it is recorded rather than fixed.** The fix is `ORDER BY … DESC LIMIT n`
+plus a reversal, and the ordering column is the question: `rowid` is insertion
+order, `createdAt` is text, and either changes which rows `list()` returns for
+rows written in the same millisecond. That is a behaviour change in a method
+with one caller and no test — worth doing deliberately. **Trigger:** a SQLite
+deployment whose `/health` starts timing out under a load balancer probe.
+
+## R-73 — The MCP gate passes on the word tools
+
+**Severity:** Low.
+**Likelihood:** Certain: it is what the step does today.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** The MCP step in `scripts/verify-release.ts` writes
+`initialize`, `notifications/initialized` and `tools/list`, then waits for
+`/"tools"\s*:/` in stdout (`:861`). It never parses the JSON-RPC response, never
+checks the `id`, never counts the tools against the 14 the documentation
+advertises, and never issues a `tools/call`. A binary that answers
+`{"tools": []}` — or an error object that happens to contain the key — passes.
+
+**Why it is recorded rather than fixed.** The step's stated purpose is "the
+binary starts and speaks the protocol", and
+`packages/mcp-server/src/index.test.ts` already compares the registration
+against `ADVERTISED_TOOLS` in both directions. The gap is that nothing joins the
+two: the test proves the *library* registers 14 tools, the gate proves the
+*binary* prints something, and a stale `dist/cli.js` satisfies the second while
+failing the first. **Trigger:** a release where `dist` is stale — which is the
+exact failure the step exists to catch.
+
+## R-74 — The free check guesses main, and a test pins the guess
+
+**Severity:** Low — a free-tier result that says "not found" about a repository
+that exists.
+**Likelihood:** Low per repository, certain per `master`-default repository
+audited while the metadata call fails.
+**Status:** **Open** — recorded, not fixed.
+
+**What happens.** `free-check.ts:296` fetches the tree at
+`metadata?.defaultBranch ?? 'main'`. Metadata failure is explicitly non-fatal
+(step 2 catches it and continues), so the tolerated case is precisely the one
+that guesses. On a repository defaulted to `master`, `develop` or `trunk` the
+tree request 404s and the free check reports the repository as unreachable.
+`free-check.test.ts:209` asserts `askedRefs` equals `['main']` for exactly this
+input, so the defect is pinned as expected behaviour — the same pattern as
+SURF-8's entry in the assessment, and the reason a test that documents a guess
+is worse than no test.
+
+**Why it is recorded rather than fixed.** `FreeCheckSource` has no
+branch-resolution call that survives a metadata failure, so the honest fixes are
+a retry of `metadata()` or a second tree request against the branch the 404
+named — both of which change the request budget of the free tier, and that
+budget is the tier's entire constraint. **Trigger:** the first free-tier
+complaint about a repository that is publicly visible.
+

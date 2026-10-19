@@ -370,6 +370,22 @@ describe('refreshing a job that is still running', () => {
     // The payment card is gone once a report exists.
     expect(screen.queryByRole('button', { name: /Refresh status/i })).toBeNull();
   });
+
+  it('capabilities 请求失败时，okx 买家仍然看到付款指引', async () => {
+    // `/capabilities` is fetched once at mount and its failure is swallowed.
+    // The payment card used to be gated on that answer alone, so a buyer whose
+    // capabilities request failed got a paymentId, no instructions and no
+    // error — a blank page on the paid path. The 402 body names the mode too,
+    // and it is the answer to *this* request.
+    const user = userEvent.setup();
+    const a = boot({ capabilities: 'network', challengeMode: 'okx', jobStates: ['queued'] });
+
+    await submit(user);
+
+    expect(a.posts).toHaveLength(1);
+    expect(await screen.findByText(/onchainos payment pay --payment-id pay-1/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Refresh status/i })).toBeTruthy();
+  });
 });
 
 /* ---------- 10: no duplicate polling, no races ---------- */

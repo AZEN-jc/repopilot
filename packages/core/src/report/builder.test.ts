@@ -197,4 +197,39 @@ describe('ReportBuilder', () => {
       r.report.limitations.some((l) => l.includes('Content was truncated')),
     ).toBe(false);
   });
+
+  it('does not repeat a web3 finding in blockers or in the task list', () => {
+    // `deploymentFindings` is built from `web3Findings.filter(...)`, and
+    // `collectBlockers` was handed both — so every high-severity web3 finding
+    // landed in `blockers` twice and, because `recommendedTasks` iterates
+    // `blockers`, twice in the task list as well. On a web3 repository that
+    // spent 25 slots on 12 findings.
+    const entries: FileEntry[] = [
+      entry('README.md'),
+      entry('contracts/Token.sol'),
+      entry('package.json'),
+    ];
+    const contents = new Map<string, string>([
+      ['README.md', '# Token\n\nA token.\n'],
+      ['contracts/Token.sol', 'pragma solidity ^0.8.0;\ncontract Token {}\n'],
+      ['package.json', JSON.stringify({ name: 't', scripts: { test: 'node test' } })],
+    ]);
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries,
+      contents,
+      truncated: false,
+      auditMode: 'full',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: false,
+    });
+
+    const ids = r.report.blockers.map((b) => b.id);
+    expect(ids).toContain('web3-no-deploy-script');
+    expect(new Set(ids).size).toBe(ids.length);
+
+    const titles = r.report.recommendedTasks.map((t) => t.title);
+    expect(new Set(titles).size).toBe(titles.length);
+  });
 });

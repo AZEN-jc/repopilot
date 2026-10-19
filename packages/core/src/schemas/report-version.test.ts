@@ -19,13 +19,24 @@ function withUnknownVersion(version: string) {
 }
 
 describe('report version', () => {
-  it('writes 1.3 on anything newly built', () => {
-    expect(REPORT_VERSION).toBe('1.3');
+  it('writes 1.4 on anything newly built', () => {
+    expect(REPORT_VERSION).toBe('1.4');
   });
 
-  it('parses a 1.3 report', () => {
+  it('parses a 1.4 report', () => {
+    expect(() => ReportSchema.parse(withVersion('1.4'))).not.toThrow();
+    expect(ReportSchema.parse(withVersion('1.4')).reportVersion).toBe('1.4');
+  });
+
+  it('still parses a 1.3 report', () => {
+    // 1.4 added `reproducibilityFindings` and `deploymentFindings`, both
+    // defaulted to `[]` — fields added, not a shape changed. A stored 1.3
+    // report has to keep parsing, and the empty default is the true answer
+    // for it: that build computed those findings and never wrote them down,
+    // so the document genuinely carries none.
     expect(() => ReportSchema.parse(withVersion('1.3'))).not.toThrow();
     expect(ReportSchema.parse(withVersion('1.3')).reportVersion).toBe('1.3');
+    expect(ReportSchema.parse(withVersion('1.3')).reproducibilityFindings).toEqual([]);
   });
 
   it('still parses a 1.2 report', () => {

@@ -64,6 +64,15 @@ export function collectFindings(report: Report): Finding[] {
     // Fixture findings are collected so `security.scanFixtures` can opt
     // them into the gate. The default policy filters them back out.
     ...report.fixtureFindings,
+    // The two categories the builder used to compute and not write. Without
+    // them every rule phrased as "is this rule's finding present?" answered
+    // `not present` for rules that fire at medium or low — including
+    // `CI-001`, `TEST-002/003` and `BUILD-001/002/003`, whose polarity makes
+    // "absent" mean "pass". A repository with no CI, no test script and no
+    // build path passed all three. (R-19's sibling, and the reason these
+    // fields exist.)
+    ...(report.reproducibilityFindings ?? []),
+    ...(report.deploymentFindings ?? []),
   ]) {
     const key = `${findingKey(f)}\u0000${f.id}`;
     if (seen.has(key)) continue;

@@ -89,7 +89,10 @@ describe('Pipeline on complete-project fixture', () => {
       fetched.entries.map((e) => e.path),
       fetched.contents
     );
-    const repro = analyzeReproducibility(fetched.entries, fetched.contents);
+    const repro = analyzeReproducibility(
+      fetched.entries.map((e) => e.path),
+      fetched.contents
+    );
     const web3 = analyzeWeb3(fetched.entries, fetched.contents);
     const hackathon = analyzeHackathon(
       fetched.entries.map((e) => e.path),

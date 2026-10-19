@@ -105,7 +105,13 @@ export function buildRepositoryMap(input: RepositoryMapInput): RepositoryMap {
   const degraded = Boolean(input.degraded) || Boolean(input.truncated);
 
   const limitations = buildLimitations({
-    degraded,
+    // The *raw* flag, not the folded one below. `degraded` in the artifact
+    // means "this map is less complete than it looks", and a truncated tree
+    // qualifies — but the sentence this drives says the archive could not be
+    // read and content was fetched one file at a time, which is a different
+    // fact. A truncated tree used to produce both sentences: the true one
+    // about truncation and a false one about the archive, in the same list.
+    degraded: Boolean(input.degraded),
     degradedReason: input.degradedReason,
     truncated: Boolean(input.truncated),
     entrypointTruncation: entrypointSet,

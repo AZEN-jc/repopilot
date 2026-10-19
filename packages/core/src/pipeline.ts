@@ -149,6 +149,16 @@ export class AuditPipeline {
     // never candidates for reading.
     const contentSkipped = Math.max(0, included.length - contents.size);
 
+    // Files the cap kept out of `included` entirely. They are not in
+    // `contentSkipped` (which is measured against `included`), so before this
+    // a 2 MiB `.env` appeared in no count at all: neither read, nor listed as
+    // unread. `exceeds-max-files` counts too — the tree said the file exists
+    // and the cap decided not to look. Binaries and noise directories are
+    // excluded on purpose and are not findings sites, so they are not counted.
+    const unreadableBeforeFetch = skipped.filter(
+      (s) => s.reason === 'exceeds-max-file-bytes' || s.reason === 'exceeds-max-files'
+    ).length;
+
     const history = await this.scanHistory(fetcher, parsed.owner, parsed.repo, input.mode);
 
     const builder = new ReportBuilder();
@@ -168,6 +178,7 @@ export class AuditPipeline {
       historyScan: history.scan,
       degraded,
       contentSkipped,
+      unreadableBeforeFetch,
     });
 
     return { report, truncated: reportTruncated, degraded };

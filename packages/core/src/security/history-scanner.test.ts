@@ -75,6 +75,25 @@ describe('addedLines', () => {
   it('returns nothing for a patch with no additions', () => {
     expect(addedLines(['@@ -1,2 +1,1 @@', ' ctx', '-removed'].join('\n'))).toEqual([]);
   });
+
+  it('reads an added line that starts with ++ as content, not as a header', () => {
+    // `++x;` is a real added line; its patch form is `+++x;`, which the old
+    // prefix filter dropped as a `+++` file header. Two consequences, both
+    // asserted here: the line was never scanned, and because it also never
+    // advanced the counter, everything below it was numbered one line early.
+    const patch = [
+      '--- a/counter.ts',
+      '+++ b/counter.ts',
+      '@@ -1,1 +1,3 @@',
+      ' const a = 1;',
+      '+++counter;',
+      '+const b = 2;',
+    ].join('\n');
+    expect(addedLines(patch)).toEqual([
+      { line: 2, text: '++counter;' },
+      { line: 3, text: 'const b = 2;' },
+    ]);
+  });
 });
 
 describe('scanCommitsForSecrets', () => {
@@ -126,6 +145,49 @@ describe('scanCommitsForSecrets', () => {
     // The introducing commit is the one a responder needs.
     expect(hits[0]?.commitSha.startsWith('aaaaaaa')).toBe(true);
     expect(hits[0]?.commitSubject).toBe('add config');
+  });
+
+  it('keeps the older commit when two carry the same timestamp', () => {
+    // Commit dates have second granularity, so a rebase, an import or a
+    // scripted push can produce two commits that share one. The caller hands
+    // them over newest first (GitHub's order), and a stable sort of an
+    // ascending date left the tie in that order — so the newer commit won and
+    // the finding named the commit that contains the credential rather than
+    // the one that introduced it.
+    const sameDate = '2026-02-01T00:00:00Z';
+    const newer = commit({
+      sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      subject: 'tidy config',
+      date: sameDate,
+      files: [{ filename: 'src/config.ts', patch: patchFor(FAKE_AWS_KEY, 40) }],
+    });
+    const older = commit({
+      sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      subject: 'add config',
+      date: sameDate,
+      files: [{ filename: 'src/config.ts', patch: patchFor(FAKE_AWS_KEY, 1) }],
+    });
+
+    const hits = scanCommitsForSecrets([newer, older]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.commitSubject).toBe('add config');
+  });
+
+  it('reports two different credentials in one file separately', () => {
+    // The dedupe key used to be (kind, file, reason) and `reason` is a
+    // constant per pattern, so the second key was silently dropped: a
+    // responder would rotate the one they were told about and leave the other
+    // live. Both are `aws_access_key`, both in `src/config.ts`.
+    const second = 'AKIA' + 'QW4T7YB2NMX8LKJ5';
+    const patch = [
+      '@@ -1,1 +1,3 @@',
+      `+const a = "${FAKE_AWS_KEY}";`,
+      `+const b = "${second}";`,
+    ].join('\n');
+
+    const hits = scanCommitsForSecrets([commit({ files: [{ filename: 'src/config.ts', patch }] })]);
+    expect(hits).toHaveLength(2);
+    expect(new Set(hits.map((h) => h.line))).toEqual(new Set([1, 2]));
   });
 
   it('reports the same credential in different files separately', () => {

@@ -165,11 +165,13 @@ function loaderOf(snapshot: RepositorySnapshot): SnapshotLoader & { calls: numbe
 }
 
 describe('MCP server', () => {
-  it('builds and registers tools', () => {
-    const { server } = buildMcpServer({ payment, allowedHosts: ALLOWED_HOSTS });
-    expect(server).toBeTruthy();
-    expect(toolNames(server).length).toBeGreaterThan(0);
-  });
+  // A test here used to read `expect(server).toBeTruthy()` followed by
+  // `expect(toolNames(server).length).toBeGreaterThan(0)`. The first assertion
+  // could not fail — `buildMcpServer` returns an object, never null — and the
+  // second is implied by the two frozen-list checks below, which compare the
+  // registration against a hand-written oracle in both directions. Nothing was
+  // lost by removing it, and a green tick that cannot go red is the thing this
+  // repository's own RISKS.md is about.
 
   it('exposes the quality gate', () => {
     const { server } = buildMcpServer({ payment, allowedHosts: ALLOWED_HOSTS });

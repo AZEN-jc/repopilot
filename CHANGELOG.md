@@ -1473,6 +1473,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A forged `X-PAYMENT` returned a completed report for nothing.** R-46 closed
+  the no-header door on the completed row; the door beside it asked the adapter
+  to *parse* the header and compared the result to `job.paymentId` — a value
+  the 402 body itself prints. An envelope with `signature: "0x00"` and the right
+  `payload.paymentId` was answered 200 with the report: no signature, no
+  `from`, no amount, no time window, no nonce. The branch now calls
+  `adapter.verifyPayment`, the only thing here that checks an EIP-712 signature
+  and burns a nonce, and a receipt that is not `completed` falls through to the
+  re-quote path. No test caught it because every payment test ran in mock mode,
+  where the two methods agree by construction; the new case quotes under mock,
+  pays the row to `completed`, then attacks it under the `okx` rail. (R-47.)
+
+- **The MCP binary guessed at its own configuration, silently.** `cli.ts`
+  resolved its mode as `PAYMENT_MODE === 'okx' ? 'okx' : 'mock'`, so `Okx`, `ok`
+  or any typo produced a server that hands out audits for free — no log line, no
+  failed request, and `NODE_ENV=production` did not help because this binary
+  never ran the API's production guards (R-02). `PRICE_AUDIT` was passed through
+  untouched, so `abc` reached `toAtomic` and became `abc000000` in the 402
+  challenge: the first buyer would sign an authorization for something that is
+  not a number. The environment read moved to `payment-env.ts`, a pure function
+  that refuses rather than guesses — unknown mode, `mock` under
+  `NODE_ENV=production`, `okx` with no recipient, and a price that is not a
+  positive decimal with at most six places are all startup errors. The API's
+  `PRICE_AUDIT` gained the same shape check, and `'0'` is refused there too.
+  (R-53.)
+
+- **An `Idempotency-Key` was a global namespace with no binding to the request.**
+  Any caller presenting a key that matched an existing job got that job, so
+  submitting a different `repoUrl` under the same key returned the *other*
+  repository's job — and on the completed path, its report. The stored `input`
+  is now compared to the incoming one (`repoUrl` normalised for trailing slash,
+  whitespace and case; the rest exactly), and a mismatch is
+  `409 IDEMPOTENCY_KEY_REUSED`. That is also what keeps the unique index from
+  turning the collision into a 500 inside `create`. There is still no caller
+  identity in this flow, so two callers who deliberately share a key for the
+  same request still share a job — that is the header's semantics. (R-56.)
+
+- **The `compose:check` secret rule compared the value, not the key.** It was
+  `/KEY=|SECRET=|PASSWORD=|TOKEN=/.test(v)` where `v` is the env **value**, so
+  it could only fire if a value literally contained the text `PASSWORD=` — which
+  no credential does. `MY_TOKEN: ghp_realtoken…` passed, and so did
+  `POSTGRES_PASSWORD: repopilot` in this repository's own compose file: the one
+  real hardcoded credential in the file passed *because* its value does not
+  contain the word `PASSWORD`. The rule now matches the key and exempts only the
+  `${VAR}` form, which made the compose file fail — so the file changed too,
+  `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repopilot}`, same default and now
+  overridable. (R-52.)
+
 - **The report cache key could collapse onto one bucket per repository.**
   `AuditWorker.executeWithCache` resolved the head SHA by guessing `main`,
   then `master`, then falling back to the literal string `'unknown'` — and
@@ -1652,6 +1700,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (R-24.)
 
 ### Fixed
+
+- **The quality contract answered `pass` about findings the report never
+  carried.** `collectFindings()` reads five arrays off `Report`; the builder
+  computed `reproducibilityFindings` and `deploymentFindings`, passed them to
+  `collectBlockers` (critical/high only) and to the score, and never wrote them
+  down. Every contract rule phrased as "is this rule's finding present?"
+  therefore answered *absent* for the medium and low rules — and for those,
+  absent means **pass**. Measured on a repository holding one README: `CI-001`,
+  `TEST-002`, `TEST-003`, `BUILD-001`, `BUILD-002` and `BUILD-003` appeared zero
+  times, and the contract returned `ci.workflow => pass`,
+  `testing.test-script => pass`, `release.build-path => pass`. A repository with
+  no CI, no test command and no build path was told it could ship. Both fields
+  are now in `ReportSchema` (defaulted to `[]`, so a stored report still
+  parses), written by the builder and read by `collectFindings`;
+  `REPORT_VERSION` moved to 1.4. The remaining half — a rule that never fires
+  because no manifest exists is still read as a pass — is recorded as R-58
+  rather than guessed at, because the report carries no evidence of which files
+  exist. (R-48.)
+
+- **Every cached audit on Postgres failed, retryably, forever.**
+  `ReportCacheRepository.findByKey` did `JSON.parse(row.report)`. The column is
+  `TEXT` on SQLite and `JSONB` on Postgres, and `node-postgres` hands JSONB back
+  already parsed — so the parse threw `"[object Object]" is not valid JSON`,
+  the worker classified it `UPSTREAM_FAILED` **retryable**, and the job burned
+  its attempt budget and landed in `failed`. A cache *read* turned into a failed
+  audit, on every audit, whenever `REPORT_CACHE_ENABLED=true` on the production
+  database. The fix is the dual-shape normalisation `job-repository.ts` already
+  used, plus a type that stops claiming `report: string` for a column that is
+  not a string. It survived because every cache test used a fake repository, so
+  the real class never met a real driver; three cases now drive it with a pool
+  that behaves the way `node-postgres` does. (R-49.)
+
+- **"Does this file exist?" was asked of the files the audit chose to read.**
+  `filterFiles` drops binaries and anything over `MAX_FILE_BYTES`; the
+  reproducibility analyzer was handed that filtered list and asked whether a
+  lockfile exists. A repository with a 2 MiB `pnpm-lock.yaml` was told **"No
+  lockfile detected" at high severity** — about a file it had committed. The
+  same filter dropped a 2 MiB `.env`, which then appeared in no count at all:
+  not read, and not reported as unread. The analyzer now takes paths and gets
+  `allPaths` (the unfiltered tree the pipeline already kept for exactly this
+  reason), and files the cap excluded before selection are counted into the
+  coverage limitation. Measured before and after with a 2 MiB lockfile and a
+  2 MiB `.env`: the blocker is gone, and the limitation now says `2 of 4 files
+  the tree listed could not be read`. (R-50.)
+
+- **The price gate read six of the seven places a price is stated.** The list
+  covered the API default, `.env.example`, the compose default, both marketplace
+  listings and the registration table — and not `DEFAULT_PRICING.audit.amount`,
+  which is what the **MCP binary** charges when `PRICE_AUDIT` is unset. Changing
+  that `'1'` to `'0.55'` left `docs:check` reporting zero issues, in a function
+  whose own docstring describes that exact failure mode. The seventh statement
+  is now read through `required()` so a reworded constant fails loudly, and
+  `EXPECTED_STATEMENTS` moved 6 → 7. (R-51.)
+
+- **A web3 finding appeared twice in `blockers` and twice in the task list.**
+  `deploymentFindings` is built from `web3Findings.filter(...)` and
+  `collectBlockers` was handed both arrays, so every high-severity web3 finding
+  was counted twice — and `recommendedTasks` iterates `blockers`, so it was
+  duplicated there too. On a list capped at 25 and 12, a five-finding web3
+  repository spent ten slots. Deduplicated by object reference: the duplication
+  is literal, so identity is exact, and an id-based merge would be wrong the
+  moment two genuinely different findings share an id. (R-54.)
+
+- **Two different credentials in one file produced one history finding.** The
+  history scanner deduplicated across commits by
+  `${kind}::${file}::${reason}`, and `reason` is a constant per pattern
+  (`'AWS access key ID pattern'`). Two AWS keys in one file collapsed into one
+  finding, so a responder would rotate the key they were told about and leave
+  the other one live — contradicting the function's own docstring. The key is
+  the line's text now: two secrets differ there, and the same secret edited
+  around keeps it. (R-55.)
+
+- **A commit that added a line starting with `++` was scanned as if it were a
+  file header.** `addedLines()` filtered the diff preamble by prefix — any line
+  beginning `+++` or `---` was dropped — and an added line is written `+` plus
+  its text, so `++counter;` produced `+++counter;`. Two silent consequences: the
+  line was never scanned for credentials, and because it also skipped the
+  `newLine += 1`, every finding below it in the hunk was reported one line
+  early. The filter is positional now: a `@@` opens a hunk and a `diff --git`
+  closes it, and outside a hunk nothing is content. The new case asserts both
+  halves at once — two added lines at lines 2 and 3 — and restoring the prefix
+  filter fails it with the miss and the off-by-one in the same message.
+  (R-59.)
+
+- **A timestamp tie named the newer commit as the one that introduced a
+  credential.** The history scanner sorts oldest-first so the dedupe keeps the
+  commit a responder has to rewrite, but commit dates have second granularity
+  and `sort` is stable — so two commits sharing a date kept GitHub's
+  newest-first order, and the finding named a commit that merely *contains* the
+  secret. Reversing the input before the sort fixes the tie; a commit whose date
+  could not be read now sorts last rather than first, because an unknown date is
+  not an ancient one. (R-60.)
+
+- **A truncated tree was reported as an unreadable archive.** `buildRepositoryMap`
+  folded `truncated` into `degraded` for the artifact — defensible, the map
+  really is less complete — and then handed the folded flag to the limitation
+  builder, whose sentence for it says the archive could not be read and content
+  was fetched one file at a time. A truncated tree produced both that false
+  sentence and the true one about truncation. The artifact keeps the folded
+  flag; the limitation builder now gets the raw one. (R-61.)
+
+- **An OKX buyer whose `/capabilities` request failed saw a blank page.** The
+  payment card was gated on `caps?.paymentMode === 'okx'`, and `caps` comes from
+  a mount-time fetch whose rejection is swallowed. When that request was
+  unreachable and `/audits` was not, the buyer got a 402, a stored `paymentId`,
+  no mock auto-pay, no instructions and no error. The 402 body names the mode
+  too, and it is the answer to *this* request; it now wins over the cached
+  capabilities answer. (R-62.)
+
+- **`.env.example` advertised two knobs that no module read.**
+  `FETCH_TIMEOUT_MS` (the GitHub client's timeout is a compile-time constant)
+  and `ANALYSIS_TIMEOUT_MS` (already removed from `env-check.ts` for this exact
+  reason, with a comment saying so, while the example file kept it). Both lines
+  are gone, replaced by a note naming the real knobs — `JOB_TIMEOUT_MS` is the
+  one that bounds a run. (R-63.)
+
+- **An MCP test asserted that a non-nullable return value was non-null.** The
+  first case in `index.test.ts` was `expect(server).toBeTruthy()` under a name
+  that promised a check of the tool list, which three other cases already make
+  against a hand-written oracle in both directions. Removed. (R-64.)
 
 - **`README.md` asserted an LLM boundary that has not existed since R-38, and
   listed a `core` subdirectory that is not there.** Two lines, both of them the

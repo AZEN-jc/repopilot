@@ -55,6 +55,10 @@ export function makeReport(overrides: Partial<Report> = {}): Report {
     securityFindings: [],
     qualityFindings: [],
     fixtureFindings: [],
+    // Empty, like a report written before these fields existed. Tests that
+    // care pass them through `overrides`.
+    reproducibilityFindings: [],
+    deploymentFindings: [],
     fixtureSummary: [],
     deploymentPlan: [],
     recommendedTasks: [],

@@ -401,7 +401,15 @@ describe('buildRepositoryMap — honest degradation', () => {
   it('treats a truncated tree as degraded', () => {
     const map = build({ 'src/index.ts': 'x\n' }, { truncated: true });
     expect(map.degraded).toBe(true);
-    expect(map.limitations.join('\n')).toContain('truncated the file tree');
+    const limitations = map.limitations.join('\n');
+    expect(limitations).toContain('truncated the file tree');
+    // Degraded for one reason, and the list must say that reason only. Both
+    // sentences used to be emitted, because the limitation builder was handed
+    // the folded flag: a truncated tree told the reader the archive could not
+    // be read and content was fetched a file at a time, neither of which
+    // happened.
+    expect(limitations).not.toContain('one file at a time');
+    expect(limitations).not.toContain('archive');
   });
 
   it('states the scope of the module graph it built', () => {

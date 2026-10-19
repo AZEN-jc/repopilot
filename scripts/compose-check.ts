@@ -6,8 +6,9 @@
  * - Asserts services: block is present
  * - Asserts each service has a `healthcheck` block
  * - Asserts API depends on DB with `service_healthy` condition
- * - Asserts no hardcoded secrets in env: blocks (looks for `*_KEY=` or
- *   `*_SECRET=` or `*_PASSWORD=` literals)
+ * - Asserts no hardcoded secrets in env: blocks — an env key named like a
+ *   credential (`*_KEY`, `*_SECRET`, `*_PASSWORD`, `*_TOKEN`) whose value is a
+ *   literal rather than a `${VAR}` interpolation
  * - Asserts no bind mount of `.env` or `node_modules` into the image
  * - Asserts the edge topology: a `web` service on the Dockerfile's `web`
  *   stage, and an API that is not published on every host interface
@@ -67,12 +68,20 @@ for (const [name, svc] of Object.entries(services)) {
     err(name, 'no image or build directive');
   }
   // env: literal secrets check
+  //
+  // Matched on the **key**, not the value. The rule used to test
+  // `/KEY=|SECRET=|PASSWORD=|TOKEN=/` against `v` — the value — so it could
+  // only fire if a value literally contained the text `PASSWORD=`. Every real
+  // case passed: `POSTGRES_PASSWORD: repopilot` in this repository's own
+  // compose file was reported clean, and so was `MY_TOKEN: ghp_…`. The
+  // interpolation form is the only thing exempt, because `${VAR}` resolves at
+  // run time and the value is not in the file.
   const env = (svc['environment'] ?? {}) as Record<string, string | number>;
   for (const [k, v] of Object.entries(env)) {
     if (typeof v !== 'string') continue;
-    if (/KEY=|SECRET=|PASSWORD=|TOKEN=/.test(v) && !/^\$\{[A-Z_]+(:-.*)?\}$/.test(v) && v.length > 0) {
-      err(name, `env.${k} looks like a hardcoded secret (use \${VAR} form)`);
-    }
+    if (!/(^|_)(KEY|SECRET|PASSWORD|TOKEN|CREDENTIAL|PASSWD)S?$/i.test(k)) continue;
+    if (/^\$\{[A-Z_]+(:-.*)?\}$/.test(v) || v.length === 0) continue;
+    err(name, `env.${k} looks like a hardcoded secret (use \${VAR} form)`);
   }
   // mount security
   const mounts = (svc['volumes'] ?? []) as Array<string | { source: string; target: string }>;

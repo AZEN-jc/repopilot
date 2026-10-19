@@ -6,7 +6,16 @@
  */
 import { z } from 'zod';
 
-const ConfigSchema = z.object({
+/**
+ * The environment schema, exported so its rejections can be tested without
+ * `process.env`.
+ *
+ * `loadConfig()` reads the process environment and caches the result, which
+ * makes it awkward to drive from a test and easy to leave a polluted
+ * environment behind. The schema is a pure function of an object; testing it
+ * directly is the same assertion without either problem.
+ */
+export const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4000),
   HOST: z.string().default('0.0.0.0'),
@@ -55,7 +64,17 @@ const ConfigSchema = z.object({
   // (PRICE_QUICK_SCAN / PRICE_FULL_AUDIT); both modes run the same analysis, so
   // the difference priced report sections rather than work. See
   // `DEFAULT_PRICING` in `@repopilot/core`.
-  PRICE_AUDIT: z.string().default('1'),
+  //
+  // The shape is validated here, not downstream: the value is converted to
+  // atomic units for an EIP-3009 authorization, and `'abc'` used to become
+  // `'abc000000'` in the challenge — a number a buyer's client would sign.
+  // `'0'` is refused too: it is a well-formed price that makes every audit
+  // free, which is a deployment mistake far more often than an intent.
+  PRICE_AUDIT: z
+    .string()
+    .regex(/^\d+(\.\d{1,6})?$/, 'PRICE_AUDIT must be a positive decimal with at most 6 places')
+    .refine((v) => Number(v) > 0, 'PRICE_AUDIT must be greater than zero')
+    .default('1'),
 
   // `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_BASE_URL` were declared
   // here and read by nothing but `defaultLlmProvider()`, which fed an unused

@@ -804,10 +804,21 @@ function readPriceStatements(): PriceStatement[] {
   const add = (where: string, amount: string) => statements.push({ where, amount });
 
   // 1. The server default — what is charged when nothing overrides it.
+  //
+  //    The pattern spans the schema chain rather than matching one line: the
+  //    field gained a `regex`/`refine` pair when `PRICE_AUDIT=abc` was found
+  //    reaching `toAtomic`, and a single-line pattern would have stopped
+  //    matching — which `required()` reports as "the statement was reworded",
+  //    not as a price disagreement. The first `.default(...)` after the field
+  //    name is its own.
   const config = read('apps/api/src/config.ts');
   add(
     'apps/api/src/config.ts',
-    required(/PRICE_AUDIT:\s*z\.string\(\)\.default\('([\d.]+)'\)/, config, 'the PRICE_AUDIT default')
+    required(
+      /PRICE_AUDIT:\s*z[\s\S]{0,400}?\.default\('([\d.]+)'\)/,
+      config,
+      'the PRICE_AUDIT default'
+    )
   );
 
   // 2. The env template — what `cp .env.example .env` gives an operator.
@@ -847,14 +858,31 @@ function readPriceStatements(): PriceStatement[] {
     )
   );
 
+  // 6. The MCP binary's fallback. `packages/mcp-server/src/cli.ts` charges
+  //    `process.env.PRICE_AUDIT ?? DEFAULT_PRICING.audit.amount`, so this is
+  //    the price an operator who never sets `PRICE_AUDIT` actually charges —
+  //    and it is a seventh statement of the number that this check used to
+  //    read past. Measured before adding it: changing the `'1'` to `'0.55'`
+  //    left `docs:check` reporting zero issues.
+  const constants = read('packages/core/src/utils/constants.ts');
+  add(
+    'packages/core/src/utils/constants.ts (DEFAULT_PRICING.audit.amount)',
+    required(
+      /DEFAULT_PRICING\s*=\s*\{\s*audit:\s*\{\s*amount:\s*'([\d.]+)'/,
+      constants,
+      'DEFAULT_PRICING.audit.amount'
+    )
+  );
+
   // The count is asserted, not assumed. Deleting an `add()` call is the one
   // way this check can shrink without anything failing: `required()` never
   // runs, so no throw, no finding — the check just quietly covers less. The
   // number below is the only place it is written down, so bumping it is a
   // deliberate act rather than a comment that drifts. (An earlier draft of
   // this file claimed "the count is always 8" in a comment. It was 10, then
-  // 12 for the two-tier layout, and 6 now that there is one price.)
-  const EXPECTED_STATEMENTS = 6;
+  // 12 for the two-tier layout, then 6 with one price, and 7 once the MCP
+  // binary's fallback was counted — the list is what moves, not the story.)
+  const EXPECTED_STATEMENTS = 7;
   if (statements.length !== EXPECTED_STATEMENTS) {
     throw new Error(
       `docs-facts: read ${statements.length} price statements, expected ${EXPECTED_STATEMENTS}. ` +

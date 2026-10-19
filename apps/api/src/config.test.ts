@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import {
   validateProductionConfig,
   ProductionConfigError,
+  ConfigSchema,
   type AppConfig,
 } from './config.js';
 
@@ -303,5 +304,23 @@ describe('validateProductionConfig (R-02)', () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).name).toBe('ProductionConfigError');
+  });
+});
+
+describe('PRICE_AUDIT', () => {
+  // The price is converted to atomic units and signed by the buyer, so its
+  // shape is not cosmetic: `'abc'` used to reach `toAtomic` and come out as
+  // `'abc000000'` in the challenge. `'0'` is refused separately — it is a
+  // well-formed number that makes every audit free.
+  it('accepts a positive decimal with up to six places', () => {
+    for (const good of ['1', '0.05', '0.000001', '12.5']) {
+      expect(ConfigSchema.parse({ PRICE_AUDIT: good }).PRICE_AUDIT).toBe(good);
+    }
+  });
+
+  it('refuses anything else', () => {
+    for (const bad of ['abc', '0', '-1', '1.1234567', '1,5', '1e3', '']) {
+      expect(ConfigSchema.safeParse({ PRICE_AUDIT: bad }).success).toBe(false);
+    }
   });
 });

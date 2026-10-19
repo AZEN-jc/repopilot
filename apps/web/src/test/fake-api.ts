@@ -46,12 +46,26 @@ export interface FakeApiOptions {
   report?: Report;
   /** `pollAfterMs` advertised on the 202. */
   pollAfterMs?: number;
-  capabilities?: Capabilities;
+  /**
+   * The `/capabilities` answer, or `'network'` to make the request reject.
+   *
+   * The rejecting case is not hypothetical: `App.tsx` swallows that failure,
+   * so a deployment where the route is unreachable has to be driveable from a
+   * test or the state it produces is never exercised.
+   */
+  capabilities?: Capabilities | 'network';
   health?: Health;
   /** How the payment-settling POST behaves. */
   settlePost?: 'ok' | 'network' | 'server-error';
   /** How the first POST (the 402 challenge) behaves. */
   challengePost?: 'ok' | 'network';
+  /**
+   * The mode the 402 body names. Defaults to the capabilities answer, because
+   * the real route reads both from the same config. Set it explicitly to model
+   * a challenge that arrives while `/capabilities` is unreachable — the state
+   * where the page has to take the mode from the 402 body or say nothing.
+   */
+  challengeMode?: 'mock' | 'okx';
   /** Make the Nth status GET (1-based) reject, as a dropped connection would. */
   getNetworkErrorAt?: number;
   /** Message carried by a `failed` job. */
@@ -104,9 +118,12 @@ export function installFakeApi(options: FakeApiOptions = {}): FakeApi {
     health = { status: 'ok', version: '0.0.0-fixture', paymentMode: 'mock', database: 'ok' },
     settlePost = 'ok',
     challengePost = 'ok',
+    challengeMode,
     getNetworkErrorAt,
     failureMessage = 'Analyzer crashed on a malformed file',
   } = options;
+
+  const mode = challengeMode ?? (capabilities === 'network' ? 'mock' : capabilities.paymentMode);
 
   const requests: RecordedRequest[] = [];
   let jobIndex = 0;
@@ -138,7 +155,10 @@ export function installFakeApi(options: FakeApiOptions = {}): FakeApi {
 
   const route = async (path: string, method: string, headers: Record<string, string>): Promise<Response> => {
     if (path === '/health') return json(health);
-    if (path === '/api/v1/capabilities') return json(capabilities);
+    if (path === '/api/v1/capabilities') {
+      if (capabilities === 'network') throw new TypeError('Failed to fetch');
+      return json(capabilities);
+    }
 
     if (path === '/api/v1/audits' && method === 'POST') {
       if (!headers['x-payment']) {
@@ -150,7 +170,7 @@ export function installFakeApi(options: FakeApiOptions = {}): FakeApi {
             status: 'queued',
             payment: {
               paymentId: 'pay-1',
-              mode: capabilities.paymentMode,
+              mode,
               amount: '0.5',
               currency: 'USDT',
               challenge: { kind: 'mock' },

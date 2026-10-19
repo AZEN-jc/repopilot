@@ -59,14 +59,31 @@ export function addedLines(patch: string): Array<{ line: number; text: string }>
   const out: Array<{ line: number; text: string }> = [];
   let newLine = 0;
 
+  // Whether the cursor is inside a hunk. Outside one, every line belongs to
+  // the file preamble (`diff --git`, `index`, `---`, `+++`, mode lines) and
+  // none of it is content.
+  //
+  // The preamble used to be filtered by prefix instead: any line starting
+  // `+++` or `---` was dropped wherever it appeared. An added line whose own
+  // text begins with `++` produces the patch line `+++…`, so it was read as a
+  // file header — the line was never scanned, and because it also never
+  // advanced `newLine`, every finding below it was reported one line early. A
+  // hunk declares where it starts, so position is knowable from the diff; the
+  // prefix alone is not.
+  let inHunk = false;
+
   for (const raw of patch.split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      inHunk = false;
+      continue;
+    }
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
     if (hunk) {
       newLine = Number(hunk[1]);
+      inHunk = true;
       continue;
     }
-    // File headers, not content.
-    if (raw.startsWith('+++') || raw.startsWith('---')) continue;
+    if (!inHunk) continue;
     // "\ No newline at end of file" — carries no line of its own.
     if (raw.startsWith('\\')) continue;
 
@@ -89,18 +106,36 @@ export function addedLines(patch: string): Array<{ line: number; text: string }>
 /**
  * Scan commits for credentials.
  *
- * Deduplicated across commits by (kind, file, reason) rather than by line
+ * Deduplicated across commits by (kind, file, line text) rather than by line
  * number: the same credential usually shows up in several commits as it
- * gets edited, and reporting it once per commit would bury the signal.
- * The earliest commit that introduced it wins, because that is the one a
+ * gets edited, and reporting it once per commit would bury the signal. The
+ * earliest commit that introduced it wins, because that is the one a
  * responder needs.
+ *
+ * It used to key on (kind, file, reason), and `reason` is a constant per
+ * pattern — so a file holding two AWS keys produced one finding. The key is
+ * the line's text now: two different secrets differ there, and the same
+ * secret edited around keeps the same text.
  */
 export function scanCommitsForSecrets(commits: ScannedCommit[]): HistorySecretHit[] {
   const hits: HistorySecretHit[] = [];
   const seen = new Set<string>();
 
   // Oldest first, so the introducing commit is the one we keep.
-  const ordered = [...commits].sort((a, b) => (a.date ?? '') .localeCompare(b.date ?? ''));
+  //
+  // Reversed before sorting because the caller hands commits over newest first
+  // (GitHub's order) and `sort` is stable: with the input reversed, two commits
+  // that share a timestamp keep the older one first. Without it a tie kept
+  // whichever the API listed first — the newer one — and the finding named a
+  // commit that merely *contains* the credential rather than the one that
+  // introduced it, which is the commit a responder has to rewrite.
+  //
+  // A commit whose date could not be read sorts last rather than first: it is
+  // unknown, not ancient, and preferring a dated commit when both carry the
+  // credential is the only ordering that is not a guess.
+  const ordered = [...commits]
+    .reverse()
+    .sort((a, b) => (a.date ?? '9999').localeCompare(b.date ?? '9999'));
 
   for (const commit of ordered) {
     for (const file of commit.files) {
@@ -121,7 +156,16 @@ export function scanCommitsForSecrets(commits: ScannedCommit[]): HistorySecretHi
           path: file.filename,
           fileContent: patch,
         })) {
-          const key = `${hit.kind}::${file.filename}::${hit.reason}`;
+          // Keyed on (kind, file, the line's text) — not on the reason, which
+          // is a fixed string per pattern. Two different AWS keys in one file
+          // both carried `reason: 'AWS access key ID pattern'`, so the second
+          // one was silently dropped: a responder would rotate the key they
+          // were told about and leave the other one live. The line text is the
+          // discriminator because it is what actually differs between two
+          // secrets, and it is stable across commits when the same credential
+          // is edited around rather than replaced — which is the case this
+          // dedupe exists for.
+          const key = `${hit.kind}::${file.filename}::${added.text.trim()}`;
           if (seen.has(key)) continue;
           seen.add(key);
           hits.push({

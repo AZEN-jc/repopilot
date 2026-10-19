@@ -180,7 +180,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: repopilot
-      POSTGRES_PASSWORD: repopilot
+      # Overridable, with the same default the three `DATABASE_URL` values
+      # above spell out. It is still a default, not a secret — this is a
+      # single-host compose stack on a private bridge, and the database
+      # publishes no port — but a credential written as a literal is a
+      # credential nobody can change without editing the file, and the
+      # `compose:check` rule that looks for exactly that had been comparing
+      # against the *value* instead of the key, so it never fired.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repopilot}
       POSTGRES_DB: repopilot
     volumes:
       - repopilot-db:/var/lib/postgresql/data

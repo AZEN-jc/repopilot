@@ -112,6 +112,8 @@ function fakeReport(): Report {
     securityFindings: [],
     qualityFindings: [],
     fixtureFindings: [],
+    reproducibilityFindings: [],
+    deploymentFindings: [],
     fixtureSummary: [],
     deploymentPlan: [],
     recommendedTasks: [],
@@ -483,6 +485,47 @@ describe('API integration', () => {
     const freeBody = free.json() as { jobId: string; status: string; payment: { paymentId: string } };
     expect(freeBody.jobId).toBe(jobId);
     expect(freeBody.payment.paymentId).not.toBe(payment.paymentId);
+  });
+
+  it('refuses an Idempotency-Key reused for a different repository', async () => {
+    // The key is a client-chosen string in a global namespace. Reusing one
+    // with a different body used to return the earlier job — pay for B, get
+    // A's jobId, then read A's report through the poll endpoint, which takes
+    // only the id. The key names a request, so a different request under the
+    // same key is a conflict, not a retry.
+    const key = `key-reuse-${Date.now()}`;
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key },
+      payload: { repoUrl: 'https://github.com/okx/repopilot', mode: 'quick' },
+    });
+    expect(first.statusCode).toBe(402);
+    const { jobId } = first.json() as { jobId: string };
+
+    const reused = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key },
+      payload: { repoUrl: 'https://github.com/octocat/Hello-World', mode: 'quick' },
+    });
+    expect(reused.statusCode).toBe(409);
+    const body = reused.json() as { error: { code: string } };
+    expect(body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    // Not a job, not a report, and not the other repository's id.
+    expect(JSON.stringify(reused.json())).not.toContain(jobId);
+
+    // The same body under the same key is still a retry: it finds the queued
+    // row and reports its status rather than creating a second job.
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'idempotency-key': key },
+      payload: { repoUrl: 'https://github.com/okx/repopilot', mode: 'quick' },
+    });
+    expect(retry.statusCode).toBe(202);
+    expect((retry.json() as { jobId: string }).jobId).toBe(jobId);
   });
 
   it('GET /api/v1/audits/:jobId returns the stored job', async () => {

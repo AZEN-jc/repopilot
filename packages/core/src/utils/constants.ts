@@ -24,10 +24,10 @@
  * and switched off. Nothing else in the report changed, so 1.2 reports still
  * parse; the version moved because a key left a map that consumers read.
  */
-export const REPORT_VERSION = '1.3' as const;
+export const REPORT_VERSION = '1.4' as const;
 
 /** Every report version this build can parse, oldest first. */
-export const SUPPORTED_REPORT_VERSIONS = ['1.0', '1.1', '1.2', '1.3'] as const;
+export const SUPPORTED_REPORT_VERSIONS = ['1.0', '1.1', '1.2', '1.3', '1.4'] as const;
 
 export const CORE_VERSION = '0.1.0';
 

@@ -269,3 +269,82 @@ describe('ReportCacheRepository', () => {
     expect((row?.report as { v: number }).v).toBe(2);
   });
 });
+
+/**
+ * The Postgres branch of `findByKey`, driven against a pool that behaves the
+ * way node-postgres does rather than the way SQLite does.
+ *
+ * These exist because of a defect that only Postgres could catch and no test
+ * could see: the column is `JSONB` there and `TEXT` here, so `report` arrives
+ * already parsed on one backend and as a string on the other. `findByKey`
+ * called `JSON.parse` unconditionally, which threw
+ * `SyntaxError: "[object Object]" is not valid JSON` on every cache hit on
+ * Postgres — the worker classified it as a retryable `UPSTREAM_FAILED`, so a
+ * repeat audit burned its attempt budget and then failed. Every test that
+ * reaches this repository injects a fake or opens SQLite, so the suite was
+ * green while the production path was broken.
+ */
+describe('ReportCacheRepository.findByKey — the two column shapes', () => {
+  function pgRepoReturning(report: unknown) {
+    const db = {
+      mode: 'postgres' as const,
+      pool: {
+        query: async () => ({
+          rowCount: 1,
+          rows: [
+            {
+              key: 'v1:a',
+              key_version: 'v1',
+              report,
+              commit_sha: 'sha1',
+              created_at: '2026-01-01T00:00:00Z',
+              // In the future, or the row reads as expired.
+              expires_at: new Date(Date.now() + 60_000).toISOString(),
+              hits: 7,
+            },
+          ],
+        }),
+      },
+    };
+    return new ReportCacheRepository(db as never);
+  }
+
+  it('reads a JSONB column, which node-postgres has already parsed', async () => {
+    const repo = pgRepoReturning({ v: 42 });
+    const row = await repo.findByKey('v1:a', 'v1');
+    expect(row?.report).toEqual({ v: 42 });
+    expect(row?.hits).toBe(7);
+  });
+
+  it('reads a TEXT column, which arrives as a string', async () => {
+    // The SQLite shape, in case the Postgres column ever becomes TEXT or a
+    // migration moves it: the string branch must keep working.
+    const repo = pgRepoReturning(JSON.stringify({ v: 42 }));
+    const row = await repo.findByKey('v1:a', 'v1');
+    expect(row?.report).toEqual({ v: 42 });
+  });
+
+  it('still treats an expired row as a miss on the parsed shape', async () => {
+    const db = {
+      mode: 'postgres' as const,
+      pool: {
+        query: async () => ({
+          rowCount: 1,
+          rows: [
+            {
+              key: 'v1:a',
+              key_version: 'v1',
+              report: { v: 42 },
+              commit_sha: 'sha1',
+              created_at: '2026-01-01T00:00:00Z',
+              expires_at: new Date(Date.now() - 60_000).toISOString(),
+              hits: 7,
+            },
+          ],
+        }),
+      },
+    };
+    const repo = new ReportCacheRepository(db as never);
+    expect(await repo.findByKey('v1:a', 'v1')).toBeNull();
+  });
+});

@@ -52,6 +52,31 @@ const POLL_AFTER_MS = 1000;
 /** Plain GitHub path segments. Anything else is rejected before a URL is built. */
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
+/**
+ * Is this the same request, for the purpose of reusing an `Idempotency-Key`?
+ *
+ * The key names a request, not a caller — there is no identity in this flow to
+ * bind it to. So "same key" only means "retry" when the body agrees, and the
+ * body is compared here rather than trusted.
+ *
+ * `repoUrl` is normalised before comparison because a retry is allowed to
+ * differ in trivia: a trailing slash, surrounding whitespace, and the case of
+ * the owner and repo all name the same repository. Everything else is compared
+ * exactly — `mode`, `target` and `outputLanguage` change what is produced, and
+ * a key that spanned two different products would be the defect this exists to
+ * prevent.
+ */
+function sameRequest(prior: CreateAuditInput, next: CreateAuditInput): boolean {
+  const normUrl = (u: string) => u.trim().replace(/\/+$/, '').toLowerCase();
+  return (
+    normUrl(prior.repoUrl) === normUrl(next.repoUrl) &&
+    prior.mode === next.mode &&
+    prior.target === next.target &&
+    prior.outputLanguage === next.outputLanguage &&
+    Boolean(prior.includeLaunchCopy) === Boolean(next.includeLaunchCopy)
+  );
+}
+
 export interface AuditRoutesDeps {
   service: JobService;
   payment: PaymentConfig;
@@ -186,7 +211,28 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
     let job = null as null | Awaited<ReturnType<typeof deps.service.getByPaymentId>>;
     if (idempotencyKey) {
       const byKey = await deps.service.getByIdempotencyKey(idempotencyKey);
-      if (byKey) job = byKey;
+      if (byKey) {
+        // The key is a client-chosen string in a global namespace: nothing
+        // binds it to a caller, so the only thing that can bind it to *this*
+        // request is the request itself. A key reused with a different body
+        // used to return the earlier job — pay for B, get A's jobId, and then
+        // read A's report through the poll endpoint. Rejecting the mismatch is
+        // also what keeps the unique index from turning it into a 500: `create`
+        // would collide on `idempotency_key` and surface as an internal error.
+        if (!sameRequest(byKey.input, input)) {
+          return sendError(
+            reply,
+            new HttpError({
+              statusCode: 409,
+              code: 'IDEMPOTENCY_KEY_REUSED',
+              message:
+                'This Idempotency-Key was already used for a different request. ' +
+                'Use a new key for a new audit, or resend the original request.',
+            })
+          );
+        }
+        job = byKey;
+      }
     }
     if (!job && xPayment) {
       const priorPaymentId = adapter.readPaymentId(xPayment);
@@ -200,16 +246,30 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
     // An idempotency key is chosen by the client and binds to nothing: it is
     // not an identity, and knowing one is not evidence of having paid for the
     // job it names. The `X-PAYMENT` header is the only credential this flow
-    // issues, so it is the one that gates this path — `readPaymentId` parses
-    // it through the adapter, so a header that does not name *this* job's
-    // payment is a request to pay for it, not a request to read it. (R-46.)
+    // issues, so it is the one that gates this path. (R-46.)
+    //
+    // And the proof has to be a *verification*, not a parse. This branch used
+    // to compare `readPaymentId(xPayment)` — which only reads the header, and
+    // does not check a signature, a `from`, an amount, a time window or a
+    // nonce — against `job.paymentId`. Since `job.paymentId` is the value the
+    // 402 response body itself discloses (`payment.paymentId` below), the gate
+    // reduced to "the caller knows a string this service hands out": an
+    // envelope with `signature: "0x00"` and the right `payload.paymentId`
+    // returned a paid report for nothing. A paymentId names a payment; it is
+    // not evidence of one.
     if (job && job.status === 'completed' && job.report) {
-      if (xPayment && adapter.readPaymentId(xPayment) === job.paymentId) {
-        return reply.send({
-          jobId: job.jobId,
-          status: 'completed',
-          report: ReportSchema.parse(job.report),
+      if (xPayment) {
+        const replayed = await adapter.verifyPayment({
+          paymentId: job.paymentId ?? '',
+          rawHeader: xPayment,
         });
+        if (replayed.status === 'completed') {
+          return reply.send({
+            jobId: job.jobId,
+            status: 'completed',
+            report: ReportSchema.parse(job.report),
+          });
+        }
       }
       // No proof. Re-quote the job the key named rather than creating a second
       // one under the same key (which the unique index would refuse) and

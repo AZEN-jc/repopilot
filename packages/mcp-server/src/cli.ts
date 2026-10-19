@@ -7,27 +7,25 @@
  * when it carries no shebang — so without this line the copy is handed to the
  * shell, which reads `import` as a command and the first path inside the
  * comment below as another one. `tsc` preserves a shebang on line 1.
+ *
+ * Every decision about *what* to read from the environment lives in
+ * `payment-env.ts`; this file only decides what to do when that throws.
  */
 import { startStdioServer } from './index.js';
-import { DEFAULT_PRICING } from '@repopilot/core';
-import type { PaymentConfig } from '@repopilot/okx-adapter';
+import { paymentFromEnv, PaymentEnvError } from './payment-env.js';
 
-const mode = (process.env['PAYMENT_MODE'] === 'okx' ? 'okx' : 'mock') as 'mock' | 'okx';
-
-const payment: PaymentConfig = {
-  mode,
-  okx: {
-    recipientAddress: process.env['OKX_PAYMENT_ADDRESS'] ?? '',
-    network: process.env['OKX_PAYMENT_NETWORK'] ?? 'xlayer',
-    x402Version: (Number(process.env['OKX_X402_VERSION']) === 1 ? 1 : 2) as 1 | 2,
-  },
-  pricing: {
-    audit: {
-      amount: process.env['PRICE_AUDIT'] ?? DEFAULT_PRICING.audit.amount,
-      currency: 'USDT',
-    },
-  },
-};
+let payment;
+try {
+  payment = paymentFromEnv(process.env);
+} catch (err) {
+  if (!(err instanceof PaymentEnvError)) throw err;
+  // Refuse to start rather than start wrong. A misconfigured server that says
+  // so at startup costs an operator a minute; one that starts anyway costs a
+  // buyer a payment.
+  // eslint-disable-next-line no-console
+  console.error(`repopilot-mcp: ${err.message}`);
+  process.exit(1);
+}
 
 const allowedHosts = (process.env['ALLOWED_REPO_HOSTS'] ?? 'github.com,raw.githubusercontent.com')
   .split(',')

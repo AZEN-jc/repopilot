@@ -3,8 +3,16 @@
  *
  * Static checks only. We do NOT execute any code from the audited repository.
  * The goal: tell the user "could I run this from a fresh clone?".
+ *
+ * **Existence is a question about the tree, not about what we chose to read.**
+ * The first parameter is a list of paths, and callers must pass the *unfiltered*
+ * tree. It used to take the filtered `FileEntry[]`, which had already dropped
+ * binaries and anything over `maxFileBytes` — so a repository with a 2 MiB
+ * `pnpm-lock.yaml` was told "No lockfile detected" at high severity, and one
+ * whose `.env` exceeded the cap was told nothing at all about the file it never
+ * opened. Whether a file exists is knowable without reading it; only the checks
+ * that need content should consult `fileContents`.
  */
-import type { FileEntry } from '../git/files.js';
 import type { Finding } from '../schemas/report.js';
 
 export interface ReproAnalysis {
@@ -34,11 +42,11 @@ const LOCKFILES: string[] = [
 ];
 
 export function analyzeReproducibility(
-  entries: FileEntry[],
+  paths: string[],
   fileContents: Map<string, string>
 ): ReproAnalysis {
   const findings: Finding[] = [];
-  const fileSet = new Set(entries.map((e) => e.path.replace(/^\.\//, '')));
+  const fileSet = new Set(paths.map((p) => p.replace(/^\.\//, '')));
 
   let hasLockfile = false;
   let hasCI = false;
@@ -57,10 +65,10 @@ export function analyzeReproducibility(
   if (fileSet.has('.env.example') || fileSet.has('example.env') || fileSet.has('sample.env')) {
     hasEnvExample = true;
   }
-  if (entries.some((e) => /^\.github\/workflows\/[^/]+\.(yml|yaml)$/i.test(e.path))) {
+  if (paths.some((p) => /^\.github\/workflows\/[^/]+\.(yml|yaml)$/i.test(p))) {
     hasCI = true;
   }
-  if (entries.some((e) => /(^|\/)(Dockerfile|docker-compose[^/]*|compose\.ya?ml)$/i.test(e.path))) {
+  if (paths.some((p) => /(^|\/)(Dockerfile|docker-compose[^/]*|compose\.ya?ml)$/i.test(p))) {
     hasDocker = true;
   }
 

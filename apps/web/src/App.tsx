@@ -45,6 +45,19 @@ function Shell() {
   const [report, setReport] = useState<Report | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [paymentId, setPaymentId] = useState<string | null>(null);
+  /*
+   * The payment mode the *challenge* named.
+   *
+   * `caps` is fetched once at mount and its failure is swallowed, so
+   * `caps?.paymentMode` is unknown on any deployment where `/capabilities` is
+   * unreachable while `/audits` is not — a proxy rule, an ad-blocker, a cold
+   * start. The 402 body carries the same fact per challenge, and the branch
+   * three lines below already reads it to decide whether to auto-pay under
+   * mock. Gating the card on `caps` alone meant a buyer in that state got a
+   * paymentId, no instructions and no error: the one state this page could not
+   * explain. The challenge wins because it is the answer to *this* request.
+   */
+  const [payMode, setPayMode] = useState<'mock' | 'okx' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>('report');
@@ -69,6 +82,7 @@ function Shell() {
         const challenge = first.payment;
         setJobId(first.jobId);
         setPaymentId(challenge.paymentId);
+        setPayMode(challenge.mode);
         if (challenge.mode === 'mock') {
           // Settle the challenge, then read the report. The replay is still
           // asynchronous — it answers 202 with a statusUrl — so the report
@@ -161,7 +175,7 @@ function Shell() {
         </div>
       )}
 
-      {paymentId && caps?.paymentMode === 'okx' && (
+      {paymentId && (payMode ?? caps?.paymentMode) === 'okx' && (
         <div className="card">
           <strong>Payment required.</strong>
           <p>

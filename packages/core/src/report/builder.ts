@@ -83,6 +83,19 @@ export interface ReportBuilderInput {
    * one false negative a release gate must not be able to produce quietly.
    */
   contentSkipped?: number;
+  /**
+   * How many files the tree listed that were never candidates for reading
+   * because of a cap — `exceeds-max-file-bytes` or `exceeds-max-files`.
+   *
+   * Separate from `contentSkipped`, which counts files that *were* selected
+   * and then could not be read. Both end in "nobody looked at this file", and
+   * only together do they make the coverage limitation true: a 2 MiB `.env`
+   * full of credentials was dropped before selection and appeared in no count
+   * at all, so the report could say "no secrets found" about a file it never
+   * opened and never mentioned. Binary and noise-directory exclusions are not
+   * counted here — those are deliberate and are not plausible finding sites.
+   */
+  unreadableBeforeFetch?: number;
 }
 
 export interface ReportBuilderResult {
@@ -98,7 +111,7 @@ export class ReportBuilder {
     // `contents`. See `ReportBuilderInput.allPaths`.
     const allPaths = input.allPaths ?? input.entries.map((e) => e.path);
     const doc = analyzeDocumentation(allPaths, input.contents);
-    const repro = analyzeReproducibility(input.entries, input.contents);
+    const repro = analyzeReproducibility(allPaths, input.contents);
     const web3 = analyzeWeb3(input.entries, input.contents);
     const hackathon = analyzeHackathon(
       allPaths,
@@ -266,6 +279,15 @@ export class ReportBuilder {
       securityFindings,
       qualityFindings,
       fixtureFindings,
+      // Both categories are written down, not just consumed. They used to be
+      // computed here and passed straight to `collectBlockers` (critical/high
+      // only) and to the score, so the medium and low rules in them — which
+      // include every one the quality contract asks about by id — were absent
+      // from the report the contract reads. A repository with no CI answered
+      // `ci.workflow => pass`. See the fields' docstrings in
+      // `schemas/report.ts`.
+      reproducibilityFindings: reproFindings,
+      deploymentFindings,
       fixtureSummary,
       historyScan: input.historyScan,
       deploymentPlan,
@@ -279,8 +301,8 @@ export class ReportBuilder {
         web3,
         input.historyScan,
         input.degraded ?? false,
-        input.contentSkipped ?? 0,
-        input.entries.length
+        (input.contentSkipped ?? 0) + (input.unreadableBeforeFetch ?? 0),
+        input.entries.length + (input.unreadableBeforeFetch ?? 0)
       ),
       generatedAt: new Date().toISOString(),
       auditMode: input.auditMode,
@@ -352,7 +374,22 @@ function collectBlockers(
   web3: Finding[],
   hack: Finding[]
 ): Finding[] {
-  const all = [...doc, ...repro, ...sec, ...deploy, ...web3, ...hack];
+  // `deploy` already contains every `web3-*` finding — it is built as
+  // `[...repro, ...web3Findings.filter(...)]` above — and `web3` is passed
+  // again, so each web3 finding used to appear twice: once in `blockers` and
+  // once more in `recommendedTasks`, which iterates `blockers`. On a web3
+  // repository that filled 25 slots with 12 findings.
+  //
+  // Deduplicated by reference, not by id. The duplication is literal — the
+  // same object sits in both arrays — so identity is exact, and an id-based
+  // merge would be wrong the moment two genuinely different findings share an
+  // id (two contract directories missing a deploy script are two findings).
+  const seen = new Set<Finding>();
+  const all = [...doc, ...repro, ...sec, ...deploy, ...web3, ...hack].filter((f) => {
+    if (seen.has(f)) return false;
+    seen.add(f);
+    return true;
+  });
   return all
     .filter((f) => f.severity === 'critical' || f.severity === 'high')
     .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity))
@@ -611,7 +648,7 @@ function buildLimitations(
   if (contentSkipped > 0) {
     out.push(
       `Content was truncated out of this audit: ${contentSkipped} of ${selectedFiles} ` +
-        'files selected for analysis could not be read — each over a size or byte cap, ' +
+        'files the tree listed could not be read — over a size or byte cap, ' +
         'or absent from the archive. Findings from them are absent, not negative.'
     );
   }
