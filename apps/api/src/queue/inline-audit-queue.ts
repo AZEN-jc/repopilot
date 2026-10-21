@@ -166,11 +166,24 @@ export class InlineAuditQueue implements AuditQueue {
   }
 
   async health(): Promise<QueueHealth> {
+    // Not started means "cannot take work", exactly as the pg-boss driver
+    // reports it. `accepting` is initialised `true` and only `stop()` clears
+    // it, so before `start()` — and in any process that never starts a queue —
+    // this answered `ok` / `acceptingJobs: true` about a queue with no workers
+    // (R-76).
+    if (!this.started) {
+      return { driver: this.driver, status: 'unavailable', acceptingJobs: false };
+    }
     return {
       driver: this.driver,
       status: this.accepting ? 'ok' : 'unavailable',
       acceptingJobs: this.accepting,
+      // `inFlight` is every accepted-and-unfinished job: the ones in `pending`
+      // and the ones a worker is holding. That is the same quantity pg-boss
+      // reports (`queuedCount + activeCount`), so the two drivers agree on
+      // `pending`; `active` is what makes the number decomposable.
       pending: this.inFlight.size,
+      active: this.activeWorkers,
     };
   }
 

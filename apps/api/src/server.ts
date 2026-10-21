@@ -48,6 +48,15 @@ export interface AppDeps {
   /** Override the audit queue driver. */
   queueDriver?: 'inline' | 'pg-boss';
   /**
+   * Override the audit queue itself (used by tests).
+   *
+   * The queue is built inside `buildApp`, so a test could not arrange the one
+   * thing the enqueue-failure path is about: `enqueue` throwing. With this,
+   * the route's behaviour on that error is reachable without a shutdown
+   * racing the request (R-75).
+   */
+  queue?: AuditQueue;
+  /**
    * Override the metadata analyzer.
    *
    * Used by tests to fix the head SHA. Without it a test run has to
@@ -213,20 +222,24 @@ export async function buildApp(
   // default) this process also consumes.
   const queueShouldConsume = mode !== 'http';
 
-  // Build the queue adapter via the shared factory.
-  const queue = buildAuditQueue({
-    db,
-    dbMode: db.mode,
-    repo,
-    pipeline,
-    cache: cacheService,
-    cacheEnabled,
-    metadataAnalyzer,
-    allowedHosts: deps.allowedHosts,
-    databaseUrl: deps.databaseUrl,
-    driverOverride: deps.queueDriver,
-    consumeOverride: queueShouldConsume,
-  });
+  // Build the queue adapter via the shared factory, unless a test handed one
+  // in. `start()` is called either way: a caller that supplied a queue is
+  // still asking for a started app.
+  const queue =
+    deps.queue ??
+    buildAuditQueue({
+      db,
+      dbMode: db.mode,
+      repo,
+      pipeline,
+      cache: cacheService,
+      cacheEnabled,
+      metadataAnalyzer,
+      allowedHosts: deps.allowedHosts,
+      databaseUrl: deps.databaseUrl,
+      driverOverride: deps.queueDriver,
+      consumeOverride: queueShouldConsume,
+    });
 
   await queue.start();
 

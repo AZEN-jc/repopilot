@@ -45,8 +45,19 @@ export interface QueueHealth {
   /** True if the queue will accept new jobs right now. False while
    *  shutting down. */
   acceptingJobs: boolean;
-  /** Number of jobs known to the driver (best-effort). */
+  /**
+   * Jobs the driver has accepted and not finished — **queued and running
+   * together**, not just the waiting ones.
+   *
+   * The name said "pending" and both drivers meant "outstanding", which is
+   * how a backlog of 5 could be one job running and four waiting (R-76).
+   * Kept as the total because that is the number an operator needs first;
+   * `active` splits it.
+   */
   pending?: number;
+  /** Of `pending`, the ones running right now. `pending - active` is the
+   *  queue depth — the number that grows when the workers cannot keep up. */
+  active?: number;
 }
 
 export interface AuditQueue {

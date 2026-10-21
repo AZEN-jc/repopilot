@@ -526,6 +526,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
                 status: { type: 'string', enum: ['ok', 'degraded', 'unavailable'] },
                 acceptingJobs: { type: 'boolean' },
                 pending: { type: 'integer', minimum: 0 },
+                active: { type: 'integer', minimum: 0 },
               },
             },
           },

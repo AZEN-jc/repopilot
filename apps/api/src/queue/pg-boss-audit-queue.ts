@@ -192,14 +192,17 @@ export class PgBossAuditQueue implements AuditQueue {
     }
     let status: QueueHealth['status'] = 'ok';
     let pending: number | undefined;
+    let active: number | undefined;
     try {
       const stats = await this.boss.getQueueStats(this.queueName);
-      const total = stats.reduce((acc, s) => acc + s.queuedCount + s.activeCount, 0);
-      pending = total;
+      // `pending` is outstanding work, the same quantity the inline driver
+      // reports; `active` splits out the part a worker is holding (R-76).
+      pending = stats.reduce((acc, s) => acc + s.queuedCount + s.activeCount, 0);
+      active = stats.reduce((acc, s) => acc + s.activeCount, 0);
     } catch (err) {
       this.log.warn({ err: (err as Error)?.message }, 'pg-boss health probe failed');
       status = 'degraded';
     }
-    return { driver: this.driver, status, acceptingJobs: this.accepting, pending };
+    return { driver: this.driver, status, acceptingJobs: this.accepting, pending, active };
   }
 }

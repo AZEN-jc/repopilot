@@ -131,12 +131,16 @@ Active risks the team is aware of and how they are mitigated.
   — Fixed: the reply is parsed and compared to the registrations
 - [R-74](#r-74--the-free-check-guesses-main-and-a-test-pins-the-guess)
   — Fixed: the fallback ref is `HEAD`
+- [R-75](#r-75--an-enqueue-failure-writes-a-terminal-state-and-the-drivers-own-error-text)
+  — Fixed: the row stays `queued`, the message goes to the log
+- [R-76](#r-76--health-calls-a-queue-that-never-started-ok-and-gives-two-states-one-number)
+  — Fixed: not-started is `unavailable`, and `active` splits `pending`
 
 ---
 
 ## How to read this file
 
-Seventy-three entries (`R-41` is unused; the numbering jumps). Every one of them
+Seventy-five entries (`R-41` is unused; the numbering jumps). Every one of them
 carries a `**Status:**` line as of 2026-10-08, and the line starts the line —
 a status folded into a `**Severity:**` line is invisible to a search and reads
 as no status at all, which is how three of them were lost until then. Five
@@ -3837,3 +3841,91 @@ about the implementation wearing the clothes of a specification. Both of the
 alternatives the entry listed — retrying `metadata()`, or a second tree request
 against the branch the 404 named — cost an extra request. This one costs none.
 
+
+## R-75 — An enqueue failure writes a terminal state and the driver's own error text
+
+**Severity:** Medium for recovery, Low for disclosure — the 503 tells the client
+to retry, and the write made the retry a no-op.
+**Likelihood:** Certain whenever the queue refuses a job at shutdown; the
+inline driver refuses for the whole drain window.
+**Status:** Fixed 2026-10-21 — the row stays `queued` and the message goes to
+the log.
+
+**What happened.** `POST /api/v1/audits` reached its last step, called
+`deps.queue.enqueue`, and on the throw did
+`service.fail(job, 'ENQUEUE_FAILED', msg)` before answering 503
+(`audits.ts:438` until 2026-10-21). Two defects in one statement, and they
+compounded:
+
+- **`failed` is terminal, and the worker claims on `expectedStatus: 'queued'`.**
+  The client did what the 503 said — replayed the same POST with the same
+  `Idempotency-Key` and the same `X-PAYMENT` — found the row it had just
+  created, attached the payment to it, enqueued it, got a 202, and the job
+  could never be claimed. The one recovery the response named was the one the
+  write had made impossible. The inline driver had already decided this
+  question for the same situation in `runJob`'s comment: a job that never
+  reached the worker stays `queued`, "which is true".
+- **`msg` was the driver's own error text.** pg-boss throws its library's
+  error, which names the database host and port. `GET /api/v1/audits/:jobId`
+  serves that column verbatim as `error.message` — R-65's disclosure, through
+  the other door. R-65 closed the worker's path; this one had no vocabulary to
+  close it with, because `ENQUEUE_FAILED` is not an `AuditErrorCode` and
+  `publicErrorMessage` cannot serve a code it does not know.
+
+**What the fix is.** No write at all, and a `warn` line keyed by `jobId`
+carrying the thrown message (`audits.ts:452-464`). Nothing is disclosed because
+nothing is stored, and `queued` is both true and claimable — so the retry the
+503 asks for now works.
+
+Not writing `failed` does mean a client that ignores the 503 and polls gets
+202 forever. That is the narrower failure: the response told it to retry the
+POST, and the POST is the only thing that can revive the job. A `failed` row
+was terminal for every client, including the compliant one.
+
+The path was previously untestable, which is why it stayed: `buildApp`
+constructs the queue itself, so the only way to make `enqueue` throw was to
+race a real shutdown against a real request. `AppDeps` now takes an optional
+`queue` override (`server.ts:50-59`), and
+`apps/api/src/tests/enqueue-failure.test.ts` injects one that throws
+`connect ECONNREFUSED 10.0.0.5:5432` — a string shaped like the real thing —
+then asserts the 503 body and the polled row contain neither the host nor the
+port, and that the row is `queued`. Restoring the `service.fail` line turns
+that case red on `expected 'failed' to be 'queued'`.
+
+## R-76 — /health calls a queue that never started ok, and gives two states one number
+
+**Severity:** Low — observability only; nothing acts on these numbers
+automatically.
+**Likelihood:** Certain before `start()`; certain whenever a backlog exists.
+**Status:** Fixed 2026-10-21 — not-started is `unavailable`, and `active`
+splits `pending`.
+
+**What happened.** `InlineAuditQueue.health()` derived its status from
+`this.accepting`, which is initialised `true` and only cleared by `stop()`.
+So a queue that had never been started — or a process that never starts one —
+answered `status: 'ok'`, `acceptingJobs: true` with no workers behind it. The
+pg-boss driver answers `unavailable` for that same state, so the two drivers
+disagreed about a queue in the same condition. `buildApp` always starts the
+queue before serving, which is why this never surfaced: the wrong answer was
+only reachable in states the shipped topology does not enter.
+
+The second half is a naming defect with an operational cost. `pending` was
+`inFlight.size` — every accepted-and-unfinished job, the running one included —
+while pg-boss summed `queuedCount + activeCount`, the same quantity. Both
+drivers agreed; the field name said "waiting". An operator reading
+`pending: 5` on a one-worker deployment could not tell a backlog of five from
+one job running and four waiting, which is the difference between "busy" and
+"stuck".
+
+**What the fix is.** `health()` returns `unavailable` / `acceptingJobs: false`
+when `started` is false, mirroring pg-boss (`inline-audit-queue.ts:168-188`).
+`QueueHealth.pending` is documented as outstanding work rather than waiting
+work (`audit-queue.ts:42-61`), and a new optional `active` carries the running
+part on both drivers (`inline-audit-queue.ts:186`,
+`pg-boss-audit-queue.ts:201`), through the zod schema and the OpenAPI document.
+`pending - active` is the queue depth.
+
+`inline-audit-queue.test.ts` pins both: a queue that never started is
+`unavailable` with no counts, and one worker holding `first` while `second`
+waits reports `{ pending: 2, active: 1 }`. Removing the `started` guard fails
+the first; dropping `active` fails the second.

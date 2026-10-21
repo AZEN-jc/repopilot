@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`AppDeps.queue`, so a test can make `enqueue` throw.** The queue is built
+  inside `buildApp`, which left the route's enqueue-failure path reachable only
+  by racing a real shutdown against a real request — which is why it was never
+  tested, and why the defect it held survived. One optional override, used
+  instead of `buildAuditQueue` and still started like any other. (R-75.)
+- **`QueueHealth.active`, the running part of `pending`.** `/health` reported
+  one number for two states: five outstanding jobs read the same whether one
+  was running with four waiting or five were waiting. `pending` is now
+  documented as outstanding work on both drivers, and `active` splits it
+  through the zod schema and the OpenAPI document, so `pending - active` is the
+  queue depth. (R-76.)
 - **`checkCitations()` — every `path:line` a document cites must point at
   something.** A citation is the one kind of prose claim that has a
   machine-checkable form, so `pnpm docs:check` now asserts two things about
@@ -1716,6 +1727,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The 503 on a refused enqueue wrote a state the retry could not leave, and
+  the driver's error text into a caller-visible column.** `POST /audits` caught
+  the queue's throw, called `service.fail(job, 'ENQUEUE_FAILED', msg)`, then
+  answered 503 asking the client to retry. `failed` is terminal and the worker
+  claims on `expectedStatus: 'queued'`, so the retry the response named could
+  never run the job — and `msg` was pg-boss's own error, which names the
+  database host and port, served verbatim by `GET /audits/:jobId`. That is
+  R-65's disclosure through the other door. The row now stays `queued` (true,
+  and claimable) and the message goes to a `warn` line keyed by `jobId`.
+  (R-75.)
+- **`/health` called a queue that never started `ok`, and reported two states
+  as one number.** `InlineAuditQueue.health()` derived its status from
+  `accepting`, which starts `true` and is only cleared by `stop()` — so before
+  `start()` it answered `ok` / `acceptingJobs: true` with no workers, where
+  pg-boss answers `unavailable`. It also returned `inFlight.size` as `pending`,
+  which includes the running job, so a backlog of five could not be told from
+  one running and four waiting. Not-started is now `unavailable`, and `active`
+  splits the count on both drivers. (R-76.)
 - **The quality contract answered `pass` about findings the report never
   carried.** `collectFindings()` reads five arrays off `Report`; the builder
   computed `reproducibilityFindings` and `deploymentFindings`, passed them to

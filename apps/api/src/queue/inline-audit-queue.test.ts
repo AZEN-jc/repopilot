@@ -85,3 +85,51 @@ describe('InlineAuditQueue — shutdown', () => {
     expect(ran).toEqual(['first']);
   });
 });
+
+/**
+ * `health()` — the two numbers, and the state before there are any (R-76).
+ *
+ * `pending` always meant "accepted and not finished", but it read as "waiting
+ * for a worker", so a backlog of five could be one job running and four
+ * waiting. `active` splits it. And `accepting` is initialised `true` and only
+ * `stop()` clears it, so a queue that never started used to report `ok` and
+ * `acceptingJobs: true` with no workers behind it — the pg-boss driver reports
+ * `unavailable` for that same state.
+ */
+describe('InlineAuditQueue — health', () => {
+  it('reports a queue that never started as unavailable, not as ok', async () => {
+    const queue = new InlineAuditQueue({
+      runOne: async () => undefined,
+      concurrency: 1,
+      shutdownGraceMs: 1_000,
+    });
+
+    await expect(queue.health()).resolves.toEqual({
+      driver: 'inline',
+      status: 'unavailable',
+      acceptingJobs: false,
+    });
+  });
+
+  it('splits outstanding work into the job running and the jobs waiting', async () => {
+    const first = gate();
+    const queue = new InlineAuditQueue({
+      runOne: async (jobId) => {
+        if (jobId === 'first') await first.promise;
+      },
+      concurrency: 1,
+      shutdownGraceMs: 5_000,
+    });
+
+    await queue.start();
+    await queue.enqueue({ jobId: 'first' });
+    await queue.enqueue({ jobId: 'second' });
+
+    // Both are outstanding, one of them is running. `pending - active` is the
+    // queue depth, which is the number that grows when workers cannot keep up.
+    await expect(queue.health()).resolves.toMatchObject({ pending: 2, active: 1 });
+
+    first.release();
+    await queue.stop();
+  });
+});

@@ -428,14 +428,35 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
       : null;
     await deps.service.setCommitSha(job, headSha);
 
-    // Enqueue. If the queue is shutting down, fail the job and tell
-    // the client via 503 so it can retry.
+    // Enqueue. If the queue is shutting down, tell the client via 503 so it
+    // can retry.
+    //
+    // The row is deliberately left `queued` and the thrown message is
+    // deliberately not stored. Both were wrong in the same statement (R-75):
+    //
+    //   - `failed` is terminal, and the worker claims on
+    //     `expectedStatus: 'queued'`. So the retry this 503 asks for — the
+    //     client replaying the same POST with the same Idempotency-Key and
+    //     X-PAYMENT — found the row it had just created, attached the payment,
+    //     enqueued it, and the job could never be claimed. The one recovery
+    //     the response named was the one the write made impossible. The inline
+    //     driver already decided this for the same situation, in
+    //     `runJob`'s comment: a job that never reached the worker stays
+    //     `queued`, "which is true".
+    //
+    //   - `service.fail(job, 'ENQUEUE_FAILED', msg)` wrote the queue's own
+    //     error text into the caller-visible `error` column, which is the
+    //     disclosure R-65 closed on the worker's path — the same door, the
+    //     other side. The message goes to the log, keyed by `jobId`, and
+    //     nowhere else.
     let enqueueResult;
     try {
       enqueueResult = await deps.queue.enqueue({ jobId: job.jobId });
     } catch (err) {
-      const msg = (err as Error).message ?? 'enqueue failed';
-      await deps.service.fail(job, 'ENQUEUE_FAILED', msg);
+      deps.log?.warn(
+        { jobId: job.jobId, err: (err as Error)?.message ?? 'unknown' },
+        'enqueue failed; job left queued for the client to retry',
+      );
       return reply.status(503).send({
         error: { code: 'ENQUEUE_FAILED', message: 'Queue is not accepting jobs; please retry' },
         jobId: job.jobId,

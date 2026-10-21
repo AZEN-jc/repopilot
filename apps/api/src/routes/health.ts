@@ -7,8 +7,9 @@
  *   - `paymentMode`: 'mock' or 'okx'. Always shown so an operator
  *     can confirm the production guard is on.
  *   - `database`: 'ok' if a sample query succeeds, 'degraded' if not.
- *   - `queue`: { driver, status, acceptingJobs, pending? }.
- *     No connection string, no internal worker id, no token.
+ *   - `queue`: { driver, status, acceptingJobs, pending?, active? }.
+ *     No connection string, no internal worker id, no token. `pending` is
+ *     outstanding work (queued and running); `active` is the running part.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -20,6 +21,7 @@ const QueueSchema = z.object({
   status: z.enum(['ok', 'degraded', 'unavailable']),
   acceptingJobs: z.boolean(),
   pending: z.number().int().nonnegative().optional(),
+  active: z.number().int().nonnegative().optional(),
 });
 
 const ResponseSchema = z.object({
