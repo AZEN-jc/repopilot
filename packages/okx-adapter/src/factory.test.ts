@@ -3,7 +3,7 @@ import { buildPaymentAdapter, priceFor, type PaymentConfig } from './factory.js'
 import type { PaymentAdapter } from './adapter.js';
 import { MockPaymentAdapter } from './mock-adapter.js';
 import { InMemoryNonceStore, type NonceStore } from './nonce-store.js';
-import { OkxPaymentAdapter } from './okx-adapter.js';
+import { OkxPaymentAdapter, SUPPORTED_NETWORKS } from './okx-adapter.js';
 
 /**
  * The pricing block in these fixtures is deliberately NOT the production
@@ -163,6 +163,58 @@ describe('buildPaymentAdapter — okx mode refuses to degrade to mock', () => {
     // on the digits, which is what EIP-55 checksummed addresses require.
     const a = buildPaymentAdapter(withRecipient('0xABCDEF0123456789ABCDEF0123456789ABCDEF01'));
     expect(a).toBeInstanceOf(OkxPaymentAdapter);
+  });
+});
+
+describe('buildPaymentAdapter — an unknown network is refused, not half-applied', () => {
+  /**
+   * R-67. `OKX_PAYMENT_NETWORK` used to be a free string, and the adapter
+   * looked the token and chain id up with `?? USDT_BY_NETWORK['xlayer']` while
+   * writing the configured name into the challenge. A typo therefore produced a
+   * challenge that named a chain nobody can pay on and quoted xlayer's real
+   * USDT contract — a combination that fails closed (the signature cannot
+   * verify) but only after the buyer has tried, in their wallet, with no
+   * server-side signal at all.
+   *
+   * The values below are the realistic ways to get it wrong: a plausible typo,
+   * a chain the adapter has no USDT row for, and the wrong case. All three used
+   * to build an adapter happily.
+   */
+  const REJECTED = ['xlayer2', 'optimism', 'polygon', 'XLayer', ' xlayer', ''];
+
+  function withNetwork(network: string): PaymentConfig {
+    return { ...okxConfig, okx: { ...okxConfig.okx, network } };
+  }
+
+  it.each(REJECTED)('throws for %j', (network) => {
+    expect(() => buildPaymentAdapter(withNetwork(network))).toThrow(/OKX_PAYMENT_NETWORK/);
+  });
+
+  it('names the variable, the value it got, and the values it accepts', () => {
+    // The reader is an operator holding a deployment that will not start, so
+    // the message has to be enough on its own: what to look at, what it
+    // currently says, and what it is allowed to say.
+    const err = (() => {
+      try {
+        buildPaymentAdapter(withNetwork('xlayer2'));
+        return null;
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(err).toBeInstanceOf(Error);
+    expect(err?.message).toContain('OKX_PAYMENT_NETWORK');
+    expect(err?.message).toContain('"xlayer2"');
+    expect(err?.message).toContain('xlayer, ethereum, base, arbitrum, bsc');
+  });
+
+  it('still builds for every supported network', () => {
+    // The guard must not be a wall: the five names the adapter has USDT rows
+    // for all have to keep working, or the fix is a regression with a better
+    // error message.
+    for (const network of SUPPORTED_NETWORKS) {
+      expect(buildPaymentAdapter(withNetwork(network))).toBeInstanceOf(OkxPaymentAdapter);
+    }
   });
 });
 

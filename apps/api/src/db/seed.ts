@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   await runMigrations(db);
   const repo = new JobRepository(db);
   const service = new JobService(repo, new MockPaymentAdapter());
-  const job = await service.create({
+  const { job } = await service.create({
     repoUrl: EXAMPLE_REPO_URL,
     mode: 'quick',
     target: 'open_source',

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoMetadata } from '../analyzers/metadata.js';
 import type { FileEntry } from '../git/files.js';
+import type { Finding } from '../schemas/report.js';
+import { makeFinding } from '../test-utils/report-factory.js';
 import { ReportBuilder } from './builder.js';
 
 const metadata: RepoMetadata = {
@@ -19,7 +21,7 @@ const metadata: RepoMetadata = {
   url: 'https://github.com/okx/repopilot',
 };
 
-function build(entries: FileEntry[], contents: Record<string, string>) {
+function build(entries: FileEntry[], contents: Record<string, string>, historyFindings?: Finding[]) {
   return new ReportBuilder().build({
     metadata,
     entries,
@@ -29,6 +31,7 @@ function build(entries: FileEntry[], contents: Record<string, string>) {
     target: 'open_source',
     outputLanguage: 'en',
     includeLaunchCopy: false,
+    historyFindings,
   }).report;
 }
 
@@ -98,6 +101,51 @@ describe('fixture findings are separated, not dropped', () => {
     );
     expect(report.fixtureFindings).toEqual([]);
     expect(report.fixtureSummary).toEqual([]);
+  });
+
+  it('the launch checklist reads the same secret list the score does', () => {
+    // R-68. The checklist was handed the array that went *into* `split()`, so a
+    // credential under `tests/` produced a report that contradicted itself:
+    // `securityFindings` had no secret and the score ignored it, while
+    // `check-secrets` said "No committed credentials: not met". The checklist
+    // is the line a human reads before shipping.
+    const fixtureOnly = build(
+      [{ path: 'tests/a.test.ts', size: 100 }],
+      { 'tests/a.test.ts': `const k = "${FAKE_KEY}";` }
+    );
+    expect(fixtureOnly.securityFindings.some((f) => f.id.startsWith('secret-'))).toBe(false);
+    expect(fixtureOnly.launchChecklist.find((c) => c.id === 'check-secrets')?.done).toBe(true);
+
+    // And the other direction, so "always true" cannot pass: a credential in
+    // ordinary source has to fail the row.
+    const inSource = build(
+      [{ path: 'src/config.ts', size: 100 }],
+      { 'src/config.ts': `const k = "${FAKE_KEY}";` }
+    );
+    expect(inSource.launchChecklist.find((c) => c.id === 'check-secrets')?.done).toBe(false);
+  });
+
+  it('does not count a history hit as a committed credential', () => {
+    // Why the fix is a filtered subset rather than "pass `securityFindings`":
+    // that array also carries `secret-history-*` rows, and "a credential was
+    // committed at some point" is a different claim from "no committed
+    // credentials". A prefix match (`id.startsWith('secret-')`) would have the
+    // same defect as the bug, one level down.
+    const history: Finding[] = [
+      makeFinding({
+        id: 'secret-history-aws_access_key-abc1234-src-config-ts',
+        category: 'security',
+        severity: 'high',
+        title: 'AWS credential in commit abc1234',
+        evidence: [{ file: 'src/config.ts', line: 1, reason: 'removed in a later commit' }],
+      }),
+    ];
+    const report = build([{ path: 'src/index.ts', size: 50 }], { 'src/index.ts': 'x' }, history);
+
+    // The history finding is in the report...
+    expect(report.securityFindings.some((f) => f.id.startsWith('secret-history-'))).toBe(true);
+    // ...and does not fail a row about committed credentials.
+    expect(report.launchChecklist.find((c) => c.id === 'check-secrets')?.done).toBe(true);
   });
 });
 

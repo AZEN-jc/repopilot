@@ -14,6 +14,33 @@ import type { AuditJob, CreateAuditInput, Report } from '@repopilot/core';
 
 type AnyJobRow = JobRowSqlite | PgJobRow;
 
+/**
+ * Was this error `uq_jobs_idempotency_key` refusing a second row for one key?
+ *
+ * Both drivers report a unique violation differently and neither shares a
+ * shape with the other, so the discrimination lives here — next to the two
+ * schema files and the two index names — rather than in a caller that would
+ * have to guess. The alternative, catching every insert failure and re-reading
+ * the key, would turn a genuine database error into "someone else won the
+ * race", which is a worse lie than the 500 it replaced.
+ *
+ * Postgres: `code: '23505'` plus the violated index in `constraint`. The
+ * `payment_id` index is unique too, and a collision there is a different
+ * event — a duplicate payment proof — so the constraint name is checked.
+ * SQLite (better-sqlite3): `SQLITE_CONSTRAINT_UNIQUE` (or plain
+ * `SQLITE_CONSTRAINT`) with the table and column in the message, because
+ * SQLite has no index names in constraint errors.
+ */
+export function isIdempotencyKeyCollision(err: unknown): boolean {
+  const e = err as { code?: unknown; constraint?: unknown; message?: unknown } | null;
+  if (!e) return false;
+  if (e.code === '23505') return e.constraint === 'uq_jobs_idempotency_key';
+  if (typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT')) {
+    return typeof e.message === 'string' && e.message.includes('jobs.idempotency_key');
+  }
+  return false;
+}
+
 export interface JobLifecyclePatch {
   status?: AuditJob['status'];
   report?: Report | null;
@@ -45,7 +72,23 @@ export interface JobRepoIdentity {
 export class JobRepository {
   constructor(private db: DB) {}
 
-  async insert(job: AuditJob, identity?: JobRepoIdentity): Promise<void> {
+  /**
+   * Insert a job, with its idempotency key in the same statement.
+   *
+   * The key used to be written by a second statement (`create()` inserted the
+   * row and then updated it), which left two windows: a crash between the two
+   * left a queued job with no key, and two concurrent first uses of one key
+   * both passed the "does it exist" check, both inserted, and the second update
+   * hit `uq_jobs_idempotency_key` and surfaced as a 500 (R-66). One statement
+   * closes both; the collision it can still raise is a fact about the race
+   * rather than a bug, and `isIdempotencyKeyCollision` is how the caller tells
+   * that collision apart from every other insert failure.
+   */
+  async insert(
+    job: AuditJob,
+    identity?: JobRepoIdentity,
+    idempotencyKey?: string | null,
+  ): Promise<void> {
     // Nullable by design: a caller that has no parsed identity leaves the
     // history columns NULL, and history queries simply skip those rows.
     const values = {
@@ -60,7 +103,7 @@ export class JobRepository {
       completedAt: null,
       failedAt: null,
       errorCode: null,
-      idempotencyKey: null,
+      idempotencyKey: idempotencyKey ?? null,
       cacheJson: null,
       owner: identity?.owner ?? null,
       repo: identity?.repo ?? null,

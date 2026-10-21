@@ -17,8 +17,9 @@
  *   - Duplicate enqueues (same jobId) coalesce: a second `enqueue()` for
  *     an already-scheduled job returns `accepted: false` and does NOT
  *     schedule a second run.
- *   - `stop()` is a graceful drain: it refuses new enqueues, then waits
- *     up to `SHUTDOWN_GRACE_PERIOD_MS` for in-flight tasks.
+ *   - `stop()` is a graceful drain: it refuses new enqueues, keeps running the
+ *     jobs it already accepted (pending ones included), and waits up to
+ *     `SHUTDOWN_GRACE_PERIOD_MS` for them.
  *   - A job that fails is re-attempted up to `retryLimit` times. The worker
  *     signals "another attempt is warranted" by throwing, and stops throwing
  *     once its own budget is spent — so this loop is the whole of the driver's
@@ -111,15 +112,30 @@ export class InlineAuditQueue implements AuditQueue {
 
   /**
    * Graceful shutdown. We:
-   *   1. Stop accepting new enqueues (`accepting = false`).
-   *   2. Wait for the in-flight tasks to finish, up to `shutdownGraceMs`.
-   *   3. Force-resolve: any tasks still running get a chance to finish
-   *      (we cannot kill them — that's the caller's responsibility), but
-   *      we no longer wait.
+   *   1. Stop accepting new enqueues (`accepting = false`). This flag means
+   *      exactly that and nothing else — it is not a drain switch.
+   *   2. Let the jobs already accepted run to completion: `dispatch()` keeps
+   *      pulling from `pending` until it is empty, whether or not shutdown has
+   *      begun. "Refuse new work" and "finish accepted work" are two different
+   *      decisions, and tying them to one flag meant that the moment shutdown
+   *      started, every job already sitting in `pending` was never started —
+   *      the client had a 202 and a `statusUrl`, and the row stayed `queued`.
+   *   3. Wait for all of them, up to `shutdownGraceMs`. `inFlight` holds every
+   *      accepted-but-unfinished job, pending included, so this waits for the
+   *      queue to empty rather than only for the workers that happened to be
+   *      busy when `stop()` was called.
+   *   4. Force-resolve: anything still running gets no further wait. Whatever
+   *      is left is named in the log line, because nothing else will mention
+   *      it.
    */
   async stop(): Promise<void> {
     if (!this.started) return;
     this.accepting = false;
+    // Nudge the drain in case every worker is idle with work still queued.
+    // It cannot normally happen (enqueue dispatches, and each worker's finally
+    // dispatches again), but this is the one call that makes the guarantee
+    // unconditional rather than a property of the other two.
+    this.dispatch();
     const deadline = Date.now() + this.shutdownGraceMs;
     while (this.inFlight.size > 0 && Date.now() < deadline) {
       // Build a settled Promise that we can await. We swallow errors
@@ -137,8 +153,12 @@ export class InlineAuditQueue implements AuditQueue {
     }
     if (this.inFlight.size > 0) {
       this.log.warn(
-        { pending: this.inFlight.size },
-        'InlineAuditQueue shutdown grace period elapsed with jobs still running; forcing close',
+        {
+          abandoned: this.inFlight.size,
+          pending: this.pending.length,
+          running: this.activeWorkers,
+        },
+        'InlineAuditQueue shutdown grace period elapsed with jobs still unfinished; forcing close',
       );
     }
     this.started = false;
@@ -176,8 +196,12 @@ export class InlineAuditQueue implements AuditQueue {
         // eslint-disable-next-line no-floating-promise
         .finally(() => {
           this.activeWorkers -= 1;
-          // Continue draining the pending queue.
-          if (this.pending.length > 0 && this.accepting) {
+          // Continue draining the pending queue. Deliberately not gated on
+          // `accepting`: that flag refuses *new* work, and the jobs in
+          // `pending` were accepted before shutdown began. Gating the drain on
+          // it meant `stop()` waited out its whole grace period while every
+          // accepted job sat unstarted (R-70).
+          if (this.pending.length > 0) {
             void this.dispatch();
           }
         });

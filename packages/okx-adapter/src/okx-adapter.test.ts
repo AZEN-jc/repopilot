@@ -1,10 +1,53 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
-import { OkxPaymentAdapter, PLACEHOLDER_RESOURCE, CHALLENGE_DESCRIPTION } from './okx-adapter.js';
+import {
+  OkxPaymentAdapter,
+  PLACEHOLDER_RESOURCE,
+  CHALLENGE_DESCRIPTION,
+  SUPPORTED_NETWORKS,
+} from './okx-adapter.js';
 import { InMemoryNonceStore, type NonceStore } from './nonce-store.js';
 
 describe('OkxPaymentAdapter', () => {
+  /**
+   * The challenge's `network` and its `asset` come from the same row of
+   * `USDT_BY_NETWORK`, and this is the assertion that says so.
+   *
+   * The defect (R-67) was a fallback: the token and chain id fell back to
+   * xlayer for any name the map did not have, while `network` was written
+   * through unchanged. So a typo produced a challenge that *named* a chain
+   * that does not exist and *quoted* a real xlayer contract — internally
+   * inconsistent, and only the buyer's wallet noticed. The name is now a closed
+   * union, and this case pins the remaining half: for each supported name the
+   * asset really is that chain's USDT.
+   */
+  it('quotes each supported network with its own USDT contract', async () => {
+    const adapterFor = (network: (typeof SUPPORTED_NETWORKS)[number]) =>
+      new OkxPaymentAdapter({
+        recipientAddress: '0x1234567890123456789012345678901234567890',
+        network,
+        x402Version: 2,
+      });
+
+    const accept = async (network: (typeof SUPPORTED_NETWORKS)[number]) => {
+      const c = await adapterFor(network).createChallenge({
+        quote: { amount: '0.02', currency: 'USDT', mode: 'quick' },
+      });
+      const body = c.challenge as { accepts: { network: string; asset: string }[] };
+      return body.accepts[0]!;
+    };
+
+    for (const network of SUPPORTED_NETWORKS) {
+      expect((await accept(network)).network).toBe(network);
+    }
+
+    // Two rows stated literally, so a lookup that ignored the network — the
+    // shape the fallback had — fails here rather than in a wallet.
+    expect((await accept('xlayer')).asset).toBe('0x55d398326f99059fF775485246999027B3197955');
+    expect((await accept('base')).asset).toBe('0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2');
+    expect((await accept('ethereum')).asset).toBe('0xdAC17F958D2ee523a2206206994597C13D831ec7');
+  });
   it('is not configured when recipient is missing', () => {
     const a = new OkxPaymentAdapter({ recipientAddress: '', network: 'xlayer', x402Version: 2 });
     expect(a.isConfigured()).toBe(false);

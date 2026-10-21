@@ -335,7 +335,23 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
       // client can safely retry with X-PAYMENT and reuse the same
       // jobId. We create the queued job WITHOUT a paymentId and
       // attach it on the second POST.
-      const queued = await deps.service.create(input, idempotencyKey, parsedRepo);
+      const { job: queued, created } = await deps.service.create(input, idempotencyKey, parsedRepo);
+      if (!created) {
+        // A concurrent request with the same Idempotency-Key inserted first
+        // (R-66). Its row already carries a challenge, and quoting a second one
+        // onto the same job would invalidate the first client's payment proof —
+        // so this answers exactly as if the job had been found at step 1: 202
+        // and the status URL. The caller polls; the winner's 402 has the
+        // challenge.
+        reply.header('Retry-After', '1');
+        reply.header('Location', `/api/v1/audits/${queued.jobId}`);
+        return reply.status(202).send({
+          jobId: queued.jobId,
+          status: queued.status,
+          statusUrl: `/api/v1/audits/${queued.jobId}`,
+          pollAfterMs: POLL_AFTER_MS,
+        });
+      }
       const price = priceFor(deps.payment);
       // No `quoteKey`: each POST gets its own challenge and its own paymentId,
       // which is what `jobs.payment_id` being UNIQUE requires (D-011).
@@ -382,7 +398,9 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
 
     // 5. Payment verified. Create (or reuse) the queued job and enqueue.
     if (!job) {
-      job = await deps.service.create(input, idempotencyKey, parsedRepo);
+      // A lost idempotency race is not an error here either: the winner's row
+      // is the job, and this request's payment is attached to it below.
+      job = (await deps.service.create(input, idempotencyKey, parsedRepo)).job;
     }
     if (job.paymentId !== priorPaymentId) {
       await deps.service.attachPayment(job, priorPaymentId);

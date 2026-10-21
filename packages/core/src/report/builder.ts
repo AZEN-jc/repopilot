@@ -123,6 +123,21 @@ export class ReportBuilder {
       [...input.contents.entries()].map(([p, c]) => ({ path: p, content: c }))
     );
     const secretFindings = toSecretFindings(secretDrafts);
+    // The identities of the secret findings, captured before the split.
+    //
+    // The launch checklist used to be handed `secretFindings` itself — the
+    // array that went *into* `split()` — while the score, the blockers and the
+    // quality contract all read the array that came out. A fixture credential
+    // under `src/**/*.test.ts` therefore made the checklist report "No
+    // committed credentials: not met" while `security.no-secrets` in the same
+    // report said `pass`. One report, two answers, and the checklist is the one
+    // a human reads (R-68).
+    //
+    // By id rather than by `id.startsWith('secret-')`, because `securityFindings`
+    // also carries `secret-history-*` rows, and "a credential appears in this
+    // repository's history" is a different claim from "no committed
+    // credentials" — a prefix match would quietly merge the two.
+    const secretFindingIds = new Set(secretFindings.map((f) => f.id));
     const hygiene = analyzeHygiene(input.entries, input.contents);
     const aiPatterns = analyzeAiPatterns(input.entries, input.contents);
     const injectionFindings = injectionFindingsToReport(
@@ -195,7 +210,7 @@ export class ReportBuilder {
     // cannot call into core — see report/fixtures.ts.
     const fixtureSummary = groupFindings(fixtureFindings);
 
-    const blockers = collectBlockers(
+    const { blockers, total: blockerTotal } = collectBlockers(
       docFindings,
       allReproFindings,
       securityFindings,
@@ -243,14 +258,18 @@ export class ReportBuilder {
     const tier = { mode: input.auditMode, includeLaunchCopy: input.includeLaunchCopy };
     const omitted = omittedSections(tier);
 
-    const recommendedTasks = buildRecommendedTasks(blockers, web3, hackathon);
+    const { tasks: recommendedTasks, fromBlockers: tasksFromBlockers } =
+      buildRecommendedTasks(blockers, web3, hackathon);
     const deploymentPlan = buildDeploymentPlan(input.auditMode, hasAny(input.contents, /dockerfile|docker-compose/i));
+    // The same findings the score counted, after the split — not the array
+    // that went into it. See `secretFindingIds` above.
+    const launchSecretFindings = securityFindings.filter((f) => secretFindingIds.has(f.id));
     const launchChecklist = buildLaunchChecklist(
       doc,
       repro,
       web3,
       hackathon,
-      secretFindings,
+      launchSecretFindings,
       blockers
     );
 
@@ -302,7 +321,15 @@ export class ReportBuilder {
         input.historyScan,
         input.degraded ?? false,
         (input.contentSkipped ?? 0) + (input.unreadableBeforeFetch ?? 0),
-        input.entries.length + (input.unreadableBeforeFetch ?? 0)
+        input.entries.length + (input.unreadableBeforeFetch ?? 0),
+        // The two lists the report caps, with what the cap dropped. R-69:
+        // a truncated list with no note reads as a complete one.
+        {
+          blockersShown: blockers.length,
+          blockersTotal: blockerTotal,
+          tasksShown: tasksFromBlockers,
+          tasksTotal: blockers.length,
+        }
       ),
       generatedAt: new Date().toISOString(),
       auditMode: input.auditMode,
@@ -366,6 +393,49 @@ function buildProvenance(input: {
   };
 }
 
+/**
+ * How many critical/high findings the report lists, and how many of those get
+ * a recommended task.
+ *
+ * Named because the limitation text quotes them: a sentence that says "the top
+ * 25" next to a `.slice(0, 20)` is the defect this batch is fixing, one layer
+ * down.
+ */
+const MAX_BLOCKERS = 25;
+const MAX_TASK_FINDINGS = 12;
+
+/**
+ * Which category wins a severity tie.
+ *
+ * The sort used to be severity-only, which left the order of equal-severity
+ * findings to the input order — so *which* 25 of 40 survived a truncation was
+ * arbitrary, and could differ between two runs over the same repository. R-69
+ * left this open on purpose: it is a product decision, not a bug fix. This is
+ * that decision, stated once: a credential leak outranks a deployment gap,
+ * which outranks a reproducibility gap, and so on down to the hackathon
+ * niceties. Ties below the category fall through to the finding id, so the list
+ * is a function of the findings and nothing else.
+ */
+const CATEGORY_RANK: Record<string, number> = {
+  security: 0,
+  deployment: 1,
+  reproducibility: 2,
+  documentation: 3,
+  web3: 4,
+  hackathon: 5,
+  meta: 6,
+};
+
+function compareBlockers(a: Finding, b: Finding): number {
+  const bySeverity = severityWeight(b.severity) - severityWeight(a.severity);
+  if (bySeverity !== 0) return bySeverity;
+  const byCategory = (CATEGORY_RANK[a.category] ?? 99) - (CATEGORY_RANK[b.category] ?? 99);
+  if (byCategory !== 0) return byCategory;
+  // Not `localeCompare`: it reads the ICU locale, and the point of this
+  // tiebreak is that the same findings produce the same order everywhere.
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
 function collectBlockers(
   doc: Finding[],
   repro: Finding[],
@@ -373,7 +443,7 @@ function collectBlockers(
   deploy: Finding[],
   web3: Finding[],
   hack: Finding[]
-): Finding[] {
+): { blockers: Finding[]; total: number } {
   // `deploy` already contains every `web3-*` finding — it is built as
   // `[...repro, ...web3Findings.filter(...)]` above — and `web3` is passed
   // again, so each web3 finding used to appear twice: once in `blockers` and
@@ -390,21 +460,31 @@ function collectBlockers(
     seen.add(f);
     return true;
   });
-  return all
+  const ranked = all
     .filter((f) => f.severity === 'critical' || f.severity === 'high')
-    .sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity))
-    .slice(0, 25);
+    .sort(compareBlockers);
+  // `total` is what the report has to be able to say out loud. The list is
+  // capped because a report with forty blockers is unreadable, but a cap
+  // nobody mentions reads as "this is all of them" — which is what R-69 was.
+  return { blockers: ranked.slice(0, MAX_BLOCKERS), total: ranked.length };
 }
 
 function severityWeight(s: 'critical' | 'high' | 'medium' | 'low'): number {
   return s === 'critical' ? 4 : s === 'high' ? 3 : s === 'medium' ? 2 : 1;
 }
 
+/**
+ * One task per blocker, up to `MAX_TASK_FINDINGS`.
+ *
+ * `fromBlockers` is how many findings actually got one, so the caller can say
+ * so. The cap is deliberately not silent any more (R-69): a reader who closed
+ * all twelve tasks believed the work was done.
+ */
 function buildRecommendedTasks(
   blockers: Finding[],
   web3: Web3Analysis,
   hackathon: HackathonAnalysis
-): Task[] {
+): { tasks: Task[]; fromBlockers: number } {
   const out: Task[] = [];
   for (const f of blockers) {
     out.push({
@@ -417,8 +497,9 @@ function buildRecommendedTasks(
         ? f.acceptanceCriteria
         : [`Evidence for "${f.id}" no longer present in the repository tree.`],
     });
-    if (out.length >= 12) break;
+    if (out.length >= MAX_TASK_FINDINGS) break;
   }
+  const fromBlockers = out.length;
   if (web3.hasContracts && !web3.hasContractTests) {
     out.push({
       id: 'task-add-contract-tests',
@@ -442,7 +523,7 @@ function buildRecommendedTasks(
       acceptanceCriteria: ['A live URL is reachable and returns 2xx.'],
     });
   }
-  return out;
+  return { tasks: out, fromBlockers };
 }
 
 /**
@@ -602,7 +683,18 @@ function buildLimitations(
   historyScan?: HistoryScan,
   degraded?: boolean,
   contentSkipped = 0,
-  selectedFiles = 0
+  selectedFiles = 0,
+  /**
+   * What the two capped lists left out. Optional so the function stays usable
+   * without them, but the builder always passes them — a caller that omits
+   * this is asking for the silent truncation back.
+   */
+  listTruncation?: {
+    blockersShown: number;
+    blockersTotal: number;
+    tasksShown: number;
+    tasksTotal: number;
+  }
 ): string[] {
   const out: string[] = [
     'Static analysis only — repository code is NEVER executed by RepoPilot.',
@@ -657,6 +749,26 @@ function buildLimitations(
       'The repository archive could not be read, so files were fetched one at a time. ' +
         'The analysis is the same; the audit used far more of the GitHub request budget.'
     );
+  }
+  // The two capped lists, disclosed. Both sentences are generated from the
+  // same constants that do the capping, so the count in the prose cannot drift
+  // from the count in the list.
+  if (listTruncation) {
+    const { blockersShown, blockersTotal, tasksShown, tasksTotal } = listTruncation;
+    if (blockersShown < blockersTotal) {
+      out.push(
+        `This report lists the top ${blockersShown} of ${blockersTotal} critical/high findings — ` +
+          'ordered by severity, then by category (security, deployment, reproducibility, ' +
+          'documentation, web3, hackathon). The remaining ' +
+          `${blockersTotal - blockersShown} are counted in the score but are not listed here.`
+      );
+    }
+    if (tasksShown < tasksTotal) {
+      out.push(
+        `Recommended tasks cover the first ${tasksShown} of the ${tasksTotal} findings listed ` +
+          'as blockers; the rest need the same work and have no task row.'
+      );
+    }
   }
   // Generated from the tier declaration, never written here. The sentence
   // this replaces said a quick audit "skips some of the deeper

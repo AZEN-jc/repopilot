@@ -112,25 +112,25 @@ Active risks the team is aware of and how they are mitigated.
 - [R-64](#r-64--an-assertion-that-could-not-fail)
   — `expect(server).toBeTruthy()` under a name that promised a tool-list check
 - [R-65](#r-65--the-raw-failure-message-is-stored-and-served-to-anyone-with-the-job-id)
-  — Open: the 500 handler redacts, the failed-job poll does not
+  — Fixed: a fixed sentence per code, the message to the log
 - [R-66](#r-66--two-concurrent-first-uses-of-one-idempotency-key-answer-500)
-  — Open: check-then-insert, and the key is written in a second statement
+  — Fixed: one insert carrying the key, and the collision returns the winner
 - [R-67](#r-67--an-unknown-payment-network-is-half-applied)
-  — Open: the challenge names the typo, the token and chain id are xlayer's
+  — Fixed: a closed union, and the xlayer fallback is gone
 - [R-68](#r-68--the-launch-checklist-reads-the-secret-list-from-before-the-split)
-  — Open: `check-secrets` and `security.no-secrets` disagree about fixtures
+  — Fixed: the checklist reads the post-split secret subset
 - [R-69](#r-69--blockers-and-recommended-tasks-are-truncated-in-silence)
-  — Open: 25 and 12, with no total and no limitation line
+  — Fixed: the caps are disclosed, and the order is a stated rule
 - [R-70](#r-70--shutdown-abandons-the-jobs-the-queue-already-accepted)
-  — Open: `stop()` refuses new work and drops the work it took
+  — Fixed: refusing new work no longer stops the drain
 - [R-71](#r-71--the-completed-write-is-the-one-status-transition-that-is-not-guarded)
-  — Open: three guarded transitions and one unguarded
+  — Fixed: all four transitions are guarded
 - [R-72](#r-72--health-reads-every-audit-report-on-sqlite-to-count-one-row)
   — Fixed: `ORDER BY … DESC LIMIT n` on both backends
 - [R-73](#r-73--the-mcp-gate-passes-on-the-word-tools)
   — Fixed: the reply is parsed and compared to the registrations
 - [R-74](#r-74--the-free-check-guesses-main-and-a-test-pins-the-guess)
-  — Open: the tolerated metadata failure is the one that guesses the branch
+  — Fixed: the fallback ref is `HEAD`
 
 ---
 
@@ -3474,112 +3474,194 @@ occupies the name of a check nobody then writes.
 holds the job id.
 **Likelihood:** Medium: every failed audit takes this path, and
 `classify()` passes through the message of whatever was thrown.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the column holds a fixed sentence per
+`errorCode`; the thrown message goes to the log.
 
-**What happens.** `audit-worker.ts:248` writes `error: auditErr.message` onto
+**What happened.** `audit-worker.ts:248` wrote `error: auditErr.message` onto
 the job row; `GET /api/v1/audits/:jobId` returns it verbatim as
-`error.message` (`audits.ts:467`). The message is whatever the underlying
-library put in the error: a pg connection failure names host and port, an
-Octokit error carries the request it failed on, a Zod error carries the input
+`error.message` (`audits.ts:467`). The message was whatever the underlying
+library put in the error: a pg connection failure named host and port, an
+Octokit error carried the request it failed on, a Zod error carried the input
 shape. The 500 handler in `utils/errors.ts` deliberately answers a flat
-`Internal error`; this path has no such policy.
+`Internal error`; this path had no such policy.
 
-**Why it is recorded rather than fixed.** The message is the only diagnostic a
-caller gets for a failed job, so removing it is a product decision, and
-filtering free text for "safe" substrings is the kind of control that fails
-open in exactly the cases nobody tested. The right shape is a fixed vocabulary
-keyed by `errorCode` — which is already on the row — plus the detail in the log.
-**Trigger:** the first failure whose message contains something an operator
-would not paste into a public ticket.
+**What the fix is.** `PUBLIC_ERROR_MESSAGES` (`audit-worker.ts:110`) is a
+`Record<AuditErrorCode, string>`, and the failure write stores
+`publicErrorMessage(auditErr.code)` instead of the message. `Record` rather than
+a lookup with a fallback: adding a code now fails the typecheck there, or the
+new code silently inherits a sentence about something else.
+
+The sentences say what the caller can do and nothing about what broke —
+"GitHub rate-limited this audit" rather than the 403 and the installation id.
+The thrown message is not lost: it is on the `audit job failed` log line above,
+keyed by `jobId`, which is where an operator looks. Writing the safe value at
+the write rather than at the route is deliberate — the row then never contains
+the leak, so any future reader is safe by construction rather than by policy.
+
+`audit-worker.test.ts` feeds a `connect ECONNREFUSED 10.0.0.5:5432` through the
+pipeline and asserts the stored value is the fixed sentence and contains neither
+the host nor `ECONNREFUSED`. The deadline case asserts `JOB_TIMEOUT`'s sentence
+and that the configured `150ms` is gone from the row. Storing the raw message
+again turns both red.
 
 ## R-66 — Two concurrent first uses of one idempotency key answer 500
 
 **Severity:** Low — a spurious 500 on a retry, not a wrong answer.
 **Likelihood:** Low, and proportional to how often clients retry a POST that
 timed out, which is the case the header exists for.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the key is written with the row, and the
+collision returns the winner.
 
-**What happens.** `handleCreate` reads `getByIdempotencyKey`, then calls
-`create`, which inserts the row and *then* writes the key in a second statement
-(`job-service.ts:67-70`). Two requests racing on a fresh key both find nothing,
-both insert, and the second write hits `uq_jobs_idempotency_key`. Nothing
-catches it, so it surfaces as `Internal error` with status 500. The two-statement
-create has a second, narrower window: a crash between insert and update leaves a
-queued job with no key, and the client's retry then creates a second job.
+**What happened.** `handleCreate` read `getByIdempotencyKey`, then called
+`create`, which inserted the row and *then* wrote the key in a second statement
+(`job-service.ts:67-70`). Two requests racing on a fresh key both found
+nothing, both inserted, and the second write hit `uq_jobs_idempotency_key`.
+Nothing caught it, so it surfaced as `Internal error` with status 500. The
+two-statement create had a second, narrower window: a crash between insert and
+update left a queued job with no key, and the client's retry then created a
+second job.
 
-**Why it is recorded rather than fixed.** The fix is one insert carrying the key
-plus a catch that re-reads and returns the winner — but it changes the create
-path on both drivers, and proving it needs two concurrent requests against a
-real unique index, which the SQLite test setup cannot express without a second
-connection. **Trigger:** the first retry storm.
+**What the fix is.** `JobRepository.insert` takes the key as a third argument
+and writes it in the same statement, so the second window is gone. The
+collision that remains is a fact about the race, and `create` catches exactly
+that one: `isIdempotencyKeyCollision` (`job-repository.ts:34`) recognises
+Postgres `23505` on `uq_jobs_idempotency_key` and SQLite's
+`SQLITE_CONSTRAINT*` on `jobs.idempotency_key`, then re-reads the winner and
+returns `{ job, created: false }`.
+
+Catching every insert failure instead would have been shorter and worse — a
+genuine database error would be reported as "someone else won the race". The
+Postgres branch checks the constraint *name* for the same reason: the
+`payment_id` index is unique too, and a duplicate payment proof is a different
+event.
+
+`create` now returns `{ job, created }`, so the two call sites in
+`routes/audits.ts` can tell the two cases apart. The 402 path answers a lost
+race with the same 202 the found-job branch gives: quoting a second challenge
+onto the winner's row would invalidate the first client's payment proof, and
+that client has not been told anything yet.
+
+`tests/sqlite.integration.test.ts` opens two connections to one file — the
+smallest faithful model of the race — has both read "no job for this key"
+before either writes, then asserts the second call returns the winner *and*
+that the table holds one row. Reverting to the two-statement create leaves two
+rows and turns that case red.
 
 ## R-67 — An unknown payment network is half-applied
 
 **Severity:** Medium when it fires: the buyer is told to pay on a chain that
 does not exist.
-**Likelihood:** Low — it needs a typo in `OKX_PAYMENT_NETWORK`.
-**Status:** **Open** — recorded, not fixed.
+**Likelihood:** Low — it needed a typo in `OKX_PAYMENT_NETWORK`.
+**Status:** Fixed 2026-10-21 — the name is a closed union, and the fallback is
+gone.
 
-**What happens.** `OKX_PAYMENT_NETWORK` is `z.string().default('xlayer')` — no
-enum. `createChallenge` writes `network: this.opts.network` into the challenge
-(so the buyer's wallet is pointed at `xlayer2`, say) while taking the token
+**What happened.** `OKX_PAYMENT_NETWORK` was `z.string().default('xlayer')` — no
+enum. `createChallenge` wrote `network: this.opts.network` into the challenge
+(so the buyer's wallet was pointed at `xlayer2`, say) while taking the token
 address and `decimals` from `USDT_BY_NETWORK[network] ?? USDT_BY_NETWORK['xlayer']`,
-and `verifyPayment` derives the EIP-712 domain from `chainId: 196`. The result
-fails closed — a signature made for another chain does not verify — so no audit
-is given away; what is lost is the buyer's payment attempt, in their wallet,
-with no server-side signal that the configuration is wrong.
+and `verifyPayment` derived the EIP-712 domain from `chainId: 196`. The result
+failed closed — a signature made for another chain does not verify — so no audit
+was given away; what was lost was the buyer's payment attempt, in their wallet,
+with no server-side signal that the configuration was wrong.
 
-**Why it is recorded rather than fixed.** The supported set is exactly the five
-keys of `USDT_BY_NETWORK`, so the fix is a one-line enum — but it makes an
-existing deployment carrying a name outside that set **refuse to start**, and
-that is a config-surface change worth deciding deliberately rather than
-appending to a batch. **Trigger:** the first live sale, or the first deployment
-that sets this variable to anything but `xlayer`.
+**What the fix is.** `SUPPORTED_NETWORKS` (`okx-adapter.ts:193`) is the key set
+of `USDT_BY_NETWORK`, and `OkxPaymentAdapterOptions.network` is now its union
+type, so a name cannot exist without a token contract, a decimals value and a
+chain id behind it. Both lookups lost their `?? USDT_BY_NETWORK['xlayer']`
+fallback: with the union there is nothing to fall back *from*, and the fallback
+was the half-application.
+
+Two gates, each with its own job. `apps/api/src/config.ts` parses
+`OKX_PAYMENT_NETWORK` with `z.enum(SUPPORTED_NETWORKS)`, so a typo fails at
+startup with the variable named and the alternatives listed.
+`buildPaymentAdapter` refuses a name outside the set for every other caller —
+`packages/mcp-server`, the smoke scripts, tests — because `PaymentConfig` is a
+plain interface that carries strings, and the factory is the one place both
+rails are chosen.
+
+The consequence the entry flagged as the reason to wait is real and is the
+point: a deployment carrying a name outside the set now **refuses to start**.
+That is the honest failure. The previous behaviour was to start, quote, and lose
+the buyer's payment in a wallet.
+
+`factory.test.ts` rejects six realistic wrong values — `xlayer2`, `optimism`,
+`polygon`, `XLayer`, `" xlayer"`, `""` — and asserts the message names the
+variable, the value it got and the five it accepts. `okx-adapter.test.ts` walks
+all five and asserts each challenge quotes that chain's USDT. Removing the
+factory guard fails eight cases; hardcoding the xlayer row in `createChallenge`
+fails the per-network asset assertion.
 
 ## R-68 — The launch checklist reads the secret list from before the split
 
 **Severity:** Low — an internal contradiction between two lines of one report.
 **Likelihood:** Certain for any repository with a fixture credential.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the checklist reads the post-split secret subset.
 
-**What happens.** `buildLaunchChecklist(..., secretFindings, ...)` is handed
+**What happened.** `buildLaunchChecklist(..., secretFindings, ...)` was handed
 `toSecretFindings(secretDrafts)` — the array *before* `split()` moved fixture
 paths out of it and before `enrichFindings` ran. `securityFindings`, the
 post-split array, is what the score, `collectBlockers` and the quality contract
-read. So a fake credential under `src/**/*.test.ts` makes `check-secrets` report
+read. So a fake credential under `src/**/*.test.ts` made `check-secrets` report
 `done: false` ("No committed credentials" not met) while
-`security.no-secrets` in the same report says `pass` and the score ignores it.
+`security.no-secrets` in the same report said `pass` and the score ignored it.
 One report, two answers, and the checklist is the one a human reads.
 
-**Why it is recorded rather than fixed.** Passing `securityFindings` would make
-the row count history and injection findings under a title that says *committed*
-credentials — a different claim, and a worse one. The precise fix is to pass the
-post-split secret subset, which needs a stable per-rule id on the enriched
-finding that this builder does not carry. **Trigger:** a customer asking why the
-checklist disagrees with the verdict, which is the first support ticket this
-row will produce.
+**What the fix is.** The builder captures the ids of the pre-split secret
+findings in a `Set` (`builder.ts:140`) and passes
+`securityFindings.filter((f) => secretFindingIds.has(f.id))` — the same
+findings, after the split removed the fixture ones.
+
+By id rather than by `id.startsWith('secret-')`, which is the obvious one-liner
+and the wrong one: `securityFindings` also carries `secret-history-*` rows, and
+"a credential was committed at some point" is a different claim from "no
+committed credentials". A prefix match would merge the two and fail the row on
+a history hit — the same defect, one level down.
+
+`fixture-split.test.ts` pins both directions: a credential under `tests/` leaves
+the row `done: true` while the finding sits in `fixtureFindings`, a credential
+in `src/` fails it, and a `secret-history-*` finding in `securityFindings` does
+not. Passing the pre-split array fails the first; switching the filter to a
+prefix match fails the third.
 
 ## R-69 — Blockers and recommended tasks are truncated in silence
 
 **Severity:** Low — a reader believes the list is complete when it is not.
 **Likelihood:** Certain above 25 blockers or 12 tasks.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the caps are disclosed, and the order that picks
+the survivors is a stated rule.
 
-**What happens.** `collectBlockers` ends in `.slice(0, 25)`
-(`builder.ts:396`) and `buildRecommendedTasks` breaks at 12
-(`builder.ts:420`). Neither emits a limitation, a total, or a "showing N of M".
-A repository with 40 high findings reads exactly like one with 25, and a reader
-who closes all 12 tasks believes the work is done. This is the same defect class
-as R-50 — a count that silently omits part of its population — in the one place
-the report presents itself as a work list.
+**What happened.** `collectBlockers` ended in `.slice(0, 25)`
+(`builder.ts:396`) and `buildRecommendedTasks` broke at 12
+(`builder.ts:420`). Neither emitted a limitation, a total, or a "showing N of
+M". A repository with 40 high findings read exactly like one with 25, and a
+reader who closed all 12 tasks believed the work was done. This is the same
+defect class as R-50 — a count that silently omits part of its population — in
+the one place the report presents itself as a work list.
 
-**Why it is recorded rather than fixed.** The count has to reach
-`buildLimitations`, whose signature is already seven positional parameters, and
-the honest fix is not the sentence but the *choice*: the sort is by severity
-only, so which 25 of 40 survive is arbitrary. Deciding that is a product
-question (top 25 by severity then by category? by file?) that a truncation note
-would paper over. **Trigger:** the first audit whose blocker count exceeds 25 —
-which the report itself can measure.
+**What the fix is.** Both functions return their total alongside their list:
+`collectBlockers` → `{ blockers, total }`, `buildRecommendedTasks` →
+`{ tasks, fromBlockers }`. The builder passes the four numbers to
+`buildLimitations`, which emits a sentence only when something was actually left
+out, and generates the counts from the same `MAX_BLOCKERS` / `MAX_TASK_FINDINGS`
+constants that do the capping — so the prose cannot drift from the list.
+
+The entry's real objection was that a note would paper over an arbitrary
+choice, and it was right: the sort was severity-only, so which 25 of 40
+survived was whatever order the analyzers happened to emit. The choice, made
+here and stated in the sentence: severity first, then category in the order
+security, deployment, reproducibility, documentation, web3, hackathon, then the
+finding id. A credential leak outranks a deployment gap; ties below the category
+fall through to the id, so the list is a function of the findings and nothing
+else. `localeCompare` is deliberately not used for that last step — it reads
+the ICU locale, and the point is the same order everywhere.
+
+`builder.test.ts` builds a clean repository (no blockers of its own) plus forty
+history findings and asserts the list is 25, the sentence says `top 25 of 40`,
+the task sentence says `first 12 of the 25`, and a three-blocker report gets no
+note at all. Two more cases pin the ordering — the same 25 when the input is
+reversed, security before documentation at equal severity, and a critical
+finding still ahead of a high one. Removing the disclosure fails four cases;
+reverting to the severity-only sort fails the same four, from the order alone.
 
 ## R-70 — Shutdown abandons the jobs the queue already accepted
 
@@ -3587,44 +3669,70 @@ which the report itself can measure.
 inline driver.
 **Likelihood:** Certain whenever the inline driver runs with more than one job
 queued at SIGTERM.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — refusing new work and finishing accepted work
+are two decisions, and `stop()` waits for the second.
 
-**What happens.** `InlineAuditQueue.stop()` sets `accepting = false`, then waits
-on `inFlight`. But `dispatch()`'s `.finally` only continues draining `pending`
-when `this.accepting` is still true (`inline-audit-queue.ts:180`), so from the
-moment shutdown begins, jobs already accepted and sitting in `pending` are never
-started — and `stop()` does not wait for them either, because it waits on
-`inflightPromises`, not on `pending.length`. The client already has a 202 and a
-`statusUrl`; the row stays `queued` and nothing moves it.
+**What happened.** `InlineAuditQueue.stop()` set `accepting = false`, then
+waited on `inFlight`. But `dispatch()`'s `.finally` only continued draining
+`pending` when `this.accepting` was still true
+(`inline-audit-queue.ts:180`), so from the moment shutdown began, jobs already
+accepted and sitting in `pending` were never started. The client already had a
+202 and a `statusUrl`; the row stayed `queued` and nothing moved it.
 
-**Why it is recorded rather than fixed.** "Refuse new work" and "finish accepted
-work" are two different flags, and splitting them changes the shutdown contract
-that `verify:release` exercises at the end of every run. The pg-boss driver is
-durable and unaffected, and production refuses the inline driver by config.
-**Trigger:** a dev or CI run that is killed with a backlog — or the inline
-driver ever being allowed outside dev.
+**What the fix is.** `accepting` now means exactly one thing — refuse new
+enqueues — and the drain is no longer gated on it. `dispatch()`'s `.finally`
+continues whenever `pending` is non-empty, and `stop()` calls `dispatch()` once
+on entry so the guarantee does not depend on a worker happening to be running.
+`stop()`'s wait was already on `inFlight`, which includes pending jobs; what
+was missing was that they would ever start, so the grace period elapsed in
+silence. The forced-close log line now names what it abandoned —
+`{ abandoned, pending, running }` — instead of one `pending` field that counted
+both.
+
+The shutdown contract `verify:release` exercises is unchanged in the direction
+that matters: `stop()` still returns within `shutdownGraceMs`, and a job that
+outlives it is still abandoned. What changed is that a job with time left now
+runs.
+
+`apps/api/src/queue/inline-audit-queue.test.ts` is new — the queue had no direct
+test, which is how a shutdown flag with two meanings survived. It enqueues two
+jobs behind one worker, calls `stop()` while the second is still queued, and
+asserts both ran; a second case asserts the door is shut at the same instant.
+Restoring `&& this.accepting` fails the first with `['first']`, and the run
+takes the full five-second grace period to get there.
 
 ## R-71 — The completed write is the one status transition that is not guarded
 
 **Severity:** Low — last-writer-wins on a terminal state, with no log line.
 **Likelihood:** Low: needs two workers on one job, which needs a reclaim.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — guarded on `processing`, and a dropped report is
+logged with the state it found.
 
-**What happens.** Every other write in `AuditWorker` passes `expectedStatus`:
+**What happened.** Every other write in `AuditWorker` passed `expectedStatus`:
 the claim is guarded on `'queued'`, the failure write on `'processing'`. The
-completion write (`audit-worker.ts:216`) passes none, so it lands whatever the
-row says now — including over a row another worker reclaimed and is processing.
-Two workers can both write `completed`; the later one wins, and nothing records
-that a write was lost or that two workers disagreed about who owned the job.
-`JobRepository.update` documents the guard as the mechanism that keeps the state
-machine intact; one of its four transitions does not use it.
+completion write (`audit-worker.ts:216`) passed none, so it landed whatever the
+row said by the time it arrived — including over a row another worker had
+reclaimed and was processing. Two workers could both write `completed`; the
+later one won, and nothing recorded that a write was lost or that two workers
+disagreed about who owned the job.
 
-**Why it is recorded rather than fixed.** Adding the argument is one line, but
-what the worker should *do* when the guarded write reports `updated: false` is
-the open question: with the guard, a late-finishing worker's report is dropped,
-which is only correct if the reclaim is guaranteed to produce one. That is
-R-44's invariant, and it deserves its own test rather than a one-line change at
-the end of a batch. **Trigger:** the first deployment with more than one worker.
+**What the fix is.** The completion write passes `'processing'`. When it reports
+`updated: false` the report is dropped — which is correct, because the reclaim
+that took the row re-runs the audit and writes its own result — and the worker
+logs `audit job completed by a worker that no longer held it; report dropped`
+with the row's current status, re-read for that purpose. The entry left this
+open as "only correct if the reclaim is guaranteed to produce one", i.e. R-44's
+invariant; the reclaim path at the top of `runOnce` requeues and then takes the
+row through the normal claim, so it does.
+
+The alternative — leave it unguarded and let the later write win — is worse than
+it looks: an unguarded write can flip a row another worker already settled to
+`failed` back to `completed`, after the client has been told it failed.
+
+`audit-worker.test.ts` holds the pipeline open, settles the row from outside
+while it runs (the state a `staleProcessingMs` reclaim produces), releases it,
+and asserts the row is still `failed` with a null report. Removing the
+`'processing'` argument turns that into `expected 'completed' to be 'failed'`.
 
 ## R-72 — Health reads every audit report on SQLite to count one row
 
@@ -3704,22 +3812,28 @@ The cap is 64 KB now, and the failure *message* stays bounded separately by
 that exists.
 **Likelihood:** Low per repository, certain per `master`-default repository
 audited while the metadata call fails.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the fallback ref is `HEAD`.
 
-**What happens.** `free-check.ts:296` fetches the tree at
+**What happened.** `free-check.ts:296` fetched the tree at
 `metadata?.defaultBranch ?? 'main'`. Metadata failure is explicitly non-fatal
-(step 2 catches it and continues), so the tolerated case is precisely the one
-that guesses. On a repository defaulted to `master`, `develop` or `trunk` the
-tree request 404s and the free check reports the repository as unreachable.
-`free-check.test.ts:209` asserts `askedRefs` equals `['main']` for exactly this
-input, so the defect is pinned as expected behaviour — the same pattern as
+(step 2 catches it and continues), so the tolerated case was precisely the one
+that guessed. On a repository defaulted to `master`, `develop` or `trunk` the
+tree request 404s and the free check reported the repository as unreachable.
+`free-check.test.ts:209` asserted `askedRefs` equals `['main']` for exactly this
+input, so the defect was pinned as expected behaviour — the same pattern as
 SURF-8's entry in the assessment, and the reason a test that documents a guess
 is worse than no test.
 
-**Why it is recorded rather than fixed.** `FreeCheckSource` has no
-branch-resolution call that survives a metadata failure, so the honest fixes are
-a retry of `metadata()` or a second tree request against the branch the 404
-named — both of which change the request budget of the free tier, and that
-budget is the tier's entire constraint. **Trigger:** the first free-tier
-complaint about a repository that is publicly visible.
+**What the fix is.** The fallback is `'HEAD'`, which is the default branch by
+definition, so it costs the same single request the tier already budgets for —
+the constraint the entry named as the reason to wait. Measured 2026-10-21
+before changing anything:
+`GET /repos/octocat/Hello-World/git/trees/HEAD` → `200` with a tree, while
+`/git/trees/main` → `404` on a `master`-default repository.
+
+The test now asserts `['HEAD']`, and its name says why: the old case was
+"falls back to main when the metadata carries no branch", which is a statement
+about the implementation wearing the clothes of a specification. Both of the
+alternatives the entry listed — retrying `metadata()`, or a second tree request
+against the branch the 404 named — cost an extra request. This one costs none.
 

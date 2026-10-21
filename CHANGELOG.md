@@ -3171,6 +3171,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truncating the front of the single line the step now parses, which would have
   turned a working server into a parse failure. 64 KB, with the failure
   *message* still bounded by `MAX_REPORTED_LINE`. (R-73.)
+- **A failed audit stored whatever the library that threw had to say, and served
+  it to anyone with the job id.** The row's `error` column is returned verbatim
+  as `error.message`, and it held `auditErr.message` — a pg connection failure
+  naming host and port, an Octokit error carrying the request it failed on, a
+  Zod error carrying the input shape. The 500 handler already answers a flat
+  `Internal error`; this path had no policy. `PUBLIC_ERROR_MESSAGES` is now a
+  `Record<AuditErrorCode, string>` — so adding a code fails the typecheck rather
+  than inheriting a sentence about something else — and the failure write stores
+  the fixed sentence for the code. The thrown message stays on the
+  `audit job failed` log line, keyed by `jobId`, which is where an operator
+  looks. A test feeds `connect ECONNREFUSED 10.0.0.5:5432` through and asserts
+  neither the host nor `ECONNREFUSED` reaches the row. (R-65.)
+- **Two concurrent first uses of one `Idempotency-Key` answered 500.**
+  `JobService.create` inserted the row and then wrote the key in a second
+  statement, so the unique index only ever saw the *second* statement: both
+  requests read "not there", both inserted, and the second update hit
+  `uq_jobs_idempotency_key` with nothing to catch it. The same gap had a
+  narrower window — a crash between the two statements left a queued job with no
+  key, and the retry then created a second job. `insert` now takes the key and
+  writes it with the row, and `create` catches exactly that collision
+  (`isIdempotencyKeyCollision`: Postgres `23505` on the named index, SQLite
+  `SQLITE_CONSTRAINT*` on the column) and returns the winner as
+  `{ job, created: false }`. Catching every insert failure would have been
+  shorter and would have reported a real database error as a lost race. The 402
+  path answers a lost race with the same 202 the found-job branch gives, because
+  quoting a second challenge onto the winner's row would invalidate the first
+  client's payment proof. Proven with two connections to one file: the second
+  call returns the winner *and* the table holds one row. (R-66.)
+- **`OKX_PAYMENT_NETWORK` was a free string, and an unknown name was
+  half-applied.** `createChallenge` wrote the configured name into the challenge
+  while taking the token and `decimals` from
+  `USDT_BY_NETWORK[network] ?? USDT_BY_NETWORK['xlayer']`, so `xlayer2` produced
+  a challenge naming a chain that does not exist and quoting a real xlayer
+  contract. It failed closed — no audit was given away — but the buyer's payment
+  died in their wallet with no server-side signal. `SUPPORTED_NETWORKS` is now
+  the key set of `USDT_BY_NETWORK` and the adapter's option type is its union,
+  so a name cannot exist without a token and a chain id; both lookups lost the
+  fallback. `config.ts` parses the variable with `z.enum(SUPPORTED_NETWORKS)`,
+  and `buildPaymentAdapter` refuses anything outside the set for the callers
+  that pass strings (`packages/mcp-server`, the smoke scripts). A deployment
+  carrying a typo now **refuses to start**, which is the point. (R-67.)
+- **The launch checklist read the secret list from before the fixture split.**
+  `buildLaunchChecklist` was handed `toSecretFindings(secretDrafts)` — the array
+  that went *into* `split()` — while the score, the blockers and the quality
+  contract read what came out. A fake credential under `tests/` therefore made
+  `check-secrets` report "No committed credentials: not met" in the same report
+  where `security.no-secrets` said `pass`. The builder now captures the pre-split
+  ids and passes the post-split subset. By id rather than by
+  `id.startsWith('secret-')`, because `securityFindings` also carries
+  `secret-history-*` rows and "committed at some point" is a different claim from
+  "no committed credentials" — the obvious one-liner would have moved the defect
+  one level down. (R-68.)
+- **`blockers` and `recommendedTasks` were truncated in silence.** `.slice(0, 25)`
+  and a break at 12, with no total and no limitation line: a repository with
+  forty high findings read exactly like one with twenty-five, and a reader who
+  closed all twelve tasks believed the work was done. Both functions now return
+  their total, and `buildLimitations` emits a sentence — only when something was
+  actually left out — generated from the same `MAX_BLOCKERS` /
+  `MAX_TASK_FINDINGS` constants that do the capping. The harder half was the
+  entry's real objection: the sort was severity-only, so *which* 25 survived was
+  whatever order the analyzers emitted. The rule is now severity, then category
+  (security, deployment, reproducibility, documentation, web3, hackathon), then
+  the finding id — and not `localeCompare` for that last step, because the point
+  is the same order everywhere. (R-69.)
+- **`InlineAuditQueue.stop()` abandoned the jobs it had already accepted.** One
+  boolean did two jobs: `accepting = false` refused new enqueues, and
+  `dispatch()`'s `.finally` read the same flag to decide whether to keep draining
+  `pending`. So from the moment shutdown began, accepted jobs were never started,
+  `stop()` waited out its whole grace period, and the client's 202 pointed at a
+  row that stayed `queued`. The flag now means only "refuse new work"; the drain
+  is unconditional, `stop()` dispatches once on entry so the guarantee does not
+  depend on a worker happening to be running, and the forced-close log line names
+  what it abandoned. The queue had no direct test at all, which is how a flag
+  with two meanings survived; `inline-audit-queue.test.ts` now holds one worker
+  open behind two jobs and asserts both ran. (R-70.)
+- **The completion write was the one status transition with no `expectedStatus`.**
+  The claim was guarded on `queued` and the failure write on `processing`; the
+  completion write landed whatever the row said by the time it arrived —
+  including over a row another worker had reclaimed, and including flipping a row
+  already settled to `failed` back to `completed` after the client had been told
+  it failed. It is guarded now, and a dropped report is logged with the status it
+  found, because the reclaim that took the row re-runs the audit and writes its
+  own result. The entry left the `updated: false` behaviour open pending R-44's
+  invariant; the reclaim path requeues and re-takes through the normal claim, so
+  it holds. (R-71.)
+- **The free check guessed `main` when the metadata call failed.** That failure
+  is explicitly non-fatal, so the tolerated case was exactly the one that
+  guessed — and on a `master`- or `trunk`-default repository the tree request
+  404s and a visible repository is reported unreachable. The fallback ref is
+  `HEAD`, which is the default branch by definition and costs the same single
+  request the tier budgets for; measured before the change:
+  `/git/trees/HEAD` → 200 and `/git/trees/main` → 404 on `octocat/Hello-World`.
+  The test that asserted `['main']` was pinning the guess as the contract; it now
+  asserts `['HEAD']` and says why. (R-74.)
 
 ### Removed
 

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { ReportBuilder } from '../report/builder.js';
 import type { RepoMetadata } from '../analyzers/metadata.js';
 import type { FileEntry } from '../git/files.js';
+import type { Finding } from '../schemas/report.js';
+import { makeFinding } from '../test-utils/report-factory.js';
 
 function entry(path: string, size = 50): FileEntry {
   return { path, size };
@@ -23,31 +25,44 @@ const baseMetadata: RepoMetadata = {
   url: 'https://github.com/okx/repopilot',
 };
 
+/**
+ * A repository with no critical/high findings at all.
+ *
+ * Shared because two very different questions need the same clean baseline:
+ * "does a clean repo score well" and "when the report truncates a list, does it
+ * say so" — the second needs a known blocker count, and any other finding
+ * would make the total depend on the fixture rather than on the cap.
+ */
+function cleanRepo(): { entries: FileEntry[]; contents: Map<string, string> } {
+  const entries: FileEntry[] = [
+    entry('README.md'),
+    entry('LICENSE'),
+    entry('.env.example'),
+    entry('.github/workflows/ci.yml'),
+    entry('Dockerfile'),
+    entry('package.json'),
+    entry('pnpm-lock.yaml'),
+    entry('src/index.ts'),
+    entry('src/utils/logger.ts'),
+    entry('docs/screenshot.png'),
+  ];
+  const contents = new Map<string, string>([
+    ['README.md', '# Title\n## Install\n`pnpm install`\n## Run\n`pnpm dev`\n## Test\n`pnpm test`\nDemo: https://demo.example.com\n'],
+    ['LICENSE', 'MIT License\n\nCopyright (c) 2026\n'],
+    ['.env.example', 'API_KEY=\n'],
+    ['.github/workflows/ci.yml', 'name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pnpm test\n'],
+    ['Dockerfile', 'FROM node:20\nCMD ["node", "dist/index.js"]\n'],
+    ['package.json', JSON.stringify({ name: 'r', scripts: { dev: 'node', test: 'node test', start: 'node' } })],
+    ['pnpm-lock.yaml', 'lockfileVersion: 9\n'],
+    ['src/index.ts', 'export const x = 1;\n'],
+    ['src/utils/logger.ts', 'export const y = 2;\n'],
+  ]);
+  return { entries, contents };
+}
+
 describe('ReportBuilder', () => {
   it('builds a complete report for a clean repo', () => {
-    const entries: FileEntry[] = [
-      entry('README.md'),
-      entry('LICENSE'),
-      entry('.env.example'),
-      entry('.github/workflows/ci.yml'),
-      entry('Dockerfile'),
-      entry('package.json'),
-      entry('pnpm-lock.yaml'),
-      entry('src/index.ts'),
-      entry('src/utils/logger.ts'),
-      entry('docs/screenshot.png'),
-    ];
-    const contents = new Map<string, string>([
-      ['README.md', '# Title\n## Install\n`pnpm install`\n## Run\n`pnpm dev`\n## Test\n`pnpm test`\nDemo: https://demo.example.com\n'],
-      ['LICENSE', 'MIT License\n\nCopyright (c) 2026\n'],
-      ['.env.example', 'API_KEY=\n'],
-      ['.github/workflows/ci.yml', 'name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pnpm test\n'],
-      ['Dockerfile', 'FROM node:20\nCMD ["node", "dist/index.js"]\n'],
-      ['package.json', JSON.stringify({ name: 'r', scripts: { dev: 'node', test: 'node test', start: 'node' } })],
-      ['pnpm-lock.yaml', 'lockfileVersion: 9\n'],
-      ['src/index.ts', 'export const x = 1;\n'],
-      ['src/utils/logger.ts', 'export const y = 2;\n'],
-    ]);
+    const { entries, contents } = cleanRepo();
     const r = new ReportBuilder().build({
       metadata: baseMetadata,
       entries,
@@ -231,5 +246,119 @@ describe('ReportBuilder', () => {
 
     const titles = r.report.recommendedTasks.map((t) => t.title);
     expect(new Set(titles).size).toBe(titles.length);
+  });
+});
+
+/**
+ * The two capped lists, and what the report says about them (R-69).
+ *
+ * `collectBlockers` stops at 25 and `buildRecommendedTasks` at 12, and neither
+ * used to say so. A repository with forty high findings read exactly like one
+ * with twenty-five, and a reader who closed all twelve tasks believed the work
+ * was done. These cases pin the disclosure and the order that makes the
+ * truncated list a decision rather than an accident.
+ */
+describe('ReportBuilder — capped lists', () => {
+  function historyHits(n: number, category: Finding['category'] = 'security'): Finding[] {
+    return Array.from({ length: n }, (_, i) =>
+      makeFinding({
+        // Ids chosen so a sort by id is the reverse of the array order: the
+        // determinism case below reverses the input and expects the same list.
+        id: `secret-history-k${String(n - i).padStart(3, '0')}`,
+        category,
+        severity: 'high',
+        title: `history hit ${i}`,
+      })
+    );
+  }
+
+  function buildWith(findings: Finding[]) {
+    const { entries, contents } = cleanRepo();
+    return new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries,
+      contents,
+      truncated: false,
+      auditMode: 'full',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: false,
+      historyFindings: findings,
+    }).report;
+  }
+
+  it('says how many blockers it left out', () => {
+    const report = buildWith(historyHits(40));
+
+    // The premise: the clean fixture contributes no blockers of its own, so the
+    // population is exactly the forty findings handed in.
+    expect(report.blockers).toHaveLength(25);
+    const sentence = report.limitations.find((l) => l.includes('critical/high findings'));
+    expect(sentence).toContain('top 25 of 40');
+    expect(sentence).toContain('counted in the score but are not listed here');
+  });
+
+  it('says how many blockers have no recommended task', () => {
+    const report = buildWith(historyHits(40));
+    expect(report.recommendedTasks).toHaveLength(12);
+    expect(
+      report.limitations.some((l) =>
+        l.includes('cover the first 12 of the 25 findings listed as blockers')
+      )
+    ).toBe(true);
+  });
+
+  it('says nothing when nothing was left out', () => {
+    // The note must be a fact about this report, not a standing disclaimer: a
+    // report with three blockers has no truncation to disclose, and a permanent
+    // sentence would train readers to ignore the one that matters.
+    const report = buildWith(historyHits(3));
+    expect(report.blockers).toHaveLength(3);
+    expect(report.limitations.some((l) => l.includes('critical/high findings'))).toBe(false);
+    expect(report.limitations.some((l) => l.includes('no task row'))).toBe(false);
+  });
+
+  it('keeps the same 25 whichever order the findings arrive in', () => {
+    // The sort used to be severity-only, so which 25 survived was whatever
+    // order the analyzers happened to emit. Two runs over one repository could
+    // list different findings, and a reader had no way to know the list was a
+    // sample.
+    const forward = buildWith(historyHits(40));
+    const backward = buildWith([...historyHits(40)].reverse());
+    expect(backward.blockers.map((b) => b.id)).toEqual(forward.blockers.map((b) => b.id));
+  });
+
+  it('puts security ahead of documentation at the same severity', () => {
+    // The category order is the product decision R-69 said it was. Stated as
+    // behaviour rather than as a constant, so reordering the ranks has to be a
+    // deliberate edit here too.
+    const report = buildWith([
+      makeFinding({
+        id: 'doc-aaa',
+        category: 'documentation',
+        severity: 'high',
+        title: 'a documentation gap',
+      }),
+      makeFinding({
+        id: 'secret-zzz',
+        category: 'security',
+        severity: 'high',
+        title: 'a committed credential',
+      }),
+    ]);
+    expect(report.blockers.map((b) => b.id)).toEqual(['secret-zzz', 'doc-aaa']);
+  });
+
+  it('still puts a critical finding ahead of a high one, whatever the category', () => {
+    const report = buildWith([
+      makeFinding({ id: 'secret-aaa', category: 'security', severity: 'high', title: 'high' }),
+      makeFinding({
+        id: 'hack-zzz',
+        category: 'hackathon',
+        severity: 'critical',
+        title: 'critical',
+      }),
+    ]);
+    expect(report.blockers.map((b) => b.id)).toEqual(['hack-zzz', 'secret-aaa']);
   });
 });

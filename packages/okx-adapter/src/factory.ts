@@ -19,7 +19,7 @@ import type { PaymentAdapter, PaymentMode } from './adapter.js';
 import { isEvmAddress } from './evm.js';
 import { MockPaymentAdapter } from './mock-adapter.js';
 import type { NonceStore } from './nonce-store.js';
-import { OkxPaymentAdapter } from './okx-adapter.js';
+import { isSupportedNetwork, OkxPaymentAdapter, SUPPORTED_NETWORKS } from './okx-adapter.js';
 
 export interface PaymentConfig {
   mode: PaymentMode;
@@ -69,6 +69,20 @@ export function buildPaymentAdapter(
         'PAYMENT_MODE=okx requires a valid OKX_PAYMENT_ADDRESS (0x-prefixed EVM address). ' +
           'Until OKX.AI Beta is granted, set PAYMENT_MODE=mock. ' +
           'See docs/EXTERNAL_ACTIONS.md (item 2) and README_OKX.md.',
+      );
+    }
+    // Refusing here rather than defaulting is the whole point of R-67: the
+    // adapter used to fall back to xlayer's token and chain id while writing
+    // the configured name into the challenge, so a typo produced a challenge
+    // for a chain that does not exist and the only signal was the buyer's
+    // wallet refusing to pay. This is the one place both rails are chosen
+    // (see the scope boundary above), so it is where every caller — the API,
+    // the MCP server, the smoke scripts — is stopped.
+    if (!isSupportedNetwork(cfg.okx.network)) {
+      throw new Error(
+        `OKX_PAYMENT_NETWORK must be one of ${SUPPORTED_NETWORKS.join(', ')} ` +
+          `(got "${cfg.okx.network}"). Each name is a USDT contract and a chain id; ` +
+          'a name outside this set has neither. See docs/OKX_LIVE_INTEGRATION.md.',
       );
     }
     return new OkxPaymentAdapter({

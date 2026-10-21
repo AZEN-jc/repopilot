@@ -32,6 +32,7 @@ import type {
   JobLifecyclePatch,
   JobRepoIdentity,
 } from '../repositories/job-repository.js';
+import { isIdempotencyKeyCollision } from '../repositories/job-repository.js';
 import type { PaymentAdapter } from '@repopilot/okx-adapter';
 
 export class JobService {
@@ -47,12 +48,25 @@ export class JobService {
    * the URL once (through `parseRepoUrl`, which enforces the host
    * allow-list) and passes the result down, so URL parsing and
    * allow-listing never get duplicated inside the data layer.
+   *
+   * Returns `created: false` with the winning row when this call lost a race
+   * on the idempotency key. That is not an error: the route's pre-check
+   * (`getByIdempotencyKey`) answers the common case, but two requests can both
+   * read "not there" before either inserts, and the second insert then hits
+   * `uq_jobs_idempotency_key`. Before this, that collision reached the error
+   * handler as an unhandled constraint violation and the client saw
+   * `Internal error` with status 500 — on a retry of a POST that had timed out,
+   * which is precisely the request the header exists to make safe (R-66).
+   *
+   * The winner is re-read rather than reconstructed: the row it wrote is the
+   * only truth about the job, and returning a locally built object would hand
+   * the caller a jobId that is not the one in the database.
    */
   async create(
     input: CreateAuditInput,
     idempotencyKey?: string | null,
     identity?: JobRepoIdentity,
-  ): Promise<AuditJob> {
+  ): Promise<{ job: AuditJob; created: boolean }> {
     const now = new Date().toISOString();
     const job = AuditJobSchema.parse({
       jobId: `job_${randomUUID()}`,
@@ -64,11 +78,20 @@ export class JobService {
       report: null,
       error: null,
     });
-    await this.repo.insert(job, identity);
-    if (idempotencyKey) {
-      await this.repo.update(job.jobId, { idempotencyKey });
+    try {
+      // Key in the same statement as the row: a crash can no longer leave a
+      // queued job with no key for a retry to duplicate.
+      await this.repo.insert(job, identity, idempotencyKey ?? null);
+      return { job, created: true };
+    } catch (err) {
+      if (!idempotencyKey || !isIdempotencyKeyCollision(err)) throw err;
+      const winner = await this.repo.findByIdempotencyKey(idempotencyKey);
+      // No winner means the row was deleted between the insert and the read.
+      // Nothing sensible to return, and swallowing it would answer 200 with no
+      // job, so the original error stands.
+      if (!winner) throw err;
+      return { job: winner, created: false };
     }
-    return job;
   }
 
   async get(jobId: string): Promise<AuditJob | null> {

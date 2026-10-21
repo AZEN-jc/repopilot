@@ -5,9 +5,13 @@
  *   - load a job by id
  *   - transition the state machine
  *     queued     -> processing  (guarded by `expectedStatus: 'queued'`)
- *     processing -> completed   (only if report stored)
+ *     processing -> completed   (guarded by `expectedStatus: 'processing'`)
  *     processing -> queued      (retryable failure, and an attempt left to spend)
  *     processing -> failed      (terminal: permanent, or out of attempts)
+ *
+ * Every one of those four writes passes `expectedStatus`. The completion write
+ * did not until R-71, which made it the only transition that could land on a
+ * row another worker owned.
  *   - run the audit pipeline through the existing Report Cache
  *   - classify errors (transient vs permanent) and decide whether another
  *     attempt is worth asking the queue for
@@ -76,6 +80,46 @@ export class AuditError extends Error {
     this.code = code;
     this.retryable = retryable;
   }
+}
+
+/**
+ * What a caller is told when a job fails.
+ *
+ * The `error` column is served verbatim as `error.message` by
+ * `GET /api/v1/audits/:jobId` (`audits.ts:467`), and what used to be written
+ * there was `auditErr.message` — whatever the library that threw put in it. A
+ * pg connection failure names host and port, an Octokit error carries the
+ * request it failed on, a Zod error carries the input shape. Every one of those
+ * is a disclosure to anyone holding a job id, and none of them helps the person
+ * reading it. The 500 handler in `utils/errors.ts` already answers a flat
+ * `Internal error`; this path had no such policy (R-65).
+ *
+ * So the column now holds one fixed sentence per code and nothing else. The
+ * original message is not lost: it is on the `audit job failed` log line,
+ * keyed by `jobId`, which is where an operator looks anyway.
+ *
+ * The sentences are deliberately specific about *what to do* and silent about
+ * *what broke*. "GitHub rate-limited this audit" is true and actionable;
+ * "403 for installation 12345 on repo x/y, retry after 60s" is actionable too,
+ * and also a map of the deployment.
+ *
+ * `Record<AuditErrorCode, string>` rather than a lookup with a fallback: adding
+ * a code has to fail the typecheck here, or the new code silently inherits a
+ * sentence about something else.
+ */
+const PUBLIC_ERROR_MESSAGES: Record<AuditErrorCode, string> = {
+  INVALID_INPUT: 'The repository URL or audit options were rejected. Check the URL and try again.',
+  HOST_NOT_ALLOWED: 'That host is not supported. Only public repositories on the configured hosts can be audited.',
+  REPO_NOT_FOUND: 'The repository could not be read. Check that it exists and is public.',
+  UPSTREAM_RATE_LIMITED: 'GitHub rate-limited this audit. Try again in a few minutes.',
+  UPSTREAM_FAILED: 'The audit could not be completed because a service it depends on failed. Try again later.',
+  JOB_TIMEOUT: 'The audit took longer than the allowed time and was stopped. Try again, or audit a smaller target.',
+  INTERNAL: 'The audit failed inside this service. The failure has been logged.',
+};
+
+/** The only text a failed job may put in the caller-visible `error` column. */
+export function publicErrorMessage(code: AuditErrorCode): string {
+  return PUBLIC_ERROR_MESSAGES[code];
 }
 
 export interface AuditWorkerDeps {
@@ -213,15 +257,39 @@ export class AuditWorker {
         this.deps.jobTimeoutMs,
         `the audit of ${job.input.repoUrl}`,
       );
-      await this.deps.repo.update(jobId, {
-        status: 'completed',
-        report,
-        completedAt: new Date().toISOString(),
-        error: null,
-        errorCode: null,
-        cacheJson: JSON.stringify(cache),
-      });
-      log.info({ jobId, hit: cache.hit, keyVersion: cache.keyVersion }, 'audit job completed');
+      const completed = await this.deps.repo.update(
+        jobId,
+        {
+          status: 'completed',
+          report,
+          completedAt: new Date().toISOString(),
+          error: null,
+          errorCode: null,
+          cacheJson: JSON.stringify(cache),
+        },
+        // Guarded on `processing`, like every other transition in this method.
+        // This was the one unguarded write (R-71): it landed whatever the row
+        // said by the time it arrived, so a worker that finished after its row
+        // had been reclaimed overwrote the new owner's state — including
+        // flipping a row another worker had already settled to `failed`.
+        'processing',
+      );
+      if (!completed.updated) {
+        // The row is no longer ours: another worker reclaimed it after our
+        // `staleProcessingMs` window elapsed, or settled it while we were
+        // finishing. Dropping this report is the correct answer — the reclaim
+        // re-runs the audit and writes its own result — but it must not be
+        // silent, because from the caller's side a paid audit just vanished.
+        // Name the state we found, so the log says whether this was a
+        // double-write or a race with a terminal state.
+        const current = await this.deps.repo.findById(jobId);
+        log.warn(
+          { jobId, attempts, rowStatus: current?.status ?? '(missing)' },
+          'audit job completed by a worker that no longer held it; report dropped',
+        );
+      } else {
+        log.info({ jobId, hit: cache.hit, keyVersion: cache.keyVersion }, 'audit job completed');
+      }
     } catch (err) {
       const auditErr = this.classify(err);
       // A retryable failure is only retryable while there is an attempt left to
@@ -245,7 +313,9 @@ export class AuditWorker {
       await this.deps.repo.update(
         jobId,
         {
-          error: auditErr.message,
+          // The caller-visible column gets a fixed sentence; the thrown
+          // message stays in the log line above (R-65).
+          error: publicErrorMessage(auditErr.code),
           errorCode: auditErr.code,
           attempts,
           failedAt: terminal ? new Date().toISOString() : null,

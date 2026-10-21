@@ -119,8 +119,8 @@ import { InMemoryNonceStore, type NonceStore } from './nonce-store.js';
 export interface OkxPaymentAdapterOptions {
   /** EVM address that receives payment. */
   recipientAddress: string;
-  /** Network name (e.g. "xlayer", "base", "ethereum"). */
-  network: string;
+  /** Network name. Must be one of `SUPPORTED_NETWORKS`. */
+  network: SupportedNetwork;
   /** x402 protocol version (currently 1 or 2). */
   x402Version: 1 | 2;
   /**
@@ -179,7 +179,27 @@ export const PLACEHOLDER_RESOURCE = 'https://repopilot.invalid/api/v1/audits';
  */
 export const CHALLENGE_DESCRIPTION = 'RepoPilot Release Gate';
 
-const USDT_BY_NETWORK: Record<string, { token: string; decimals: number; chainId: number }> = {
+/**
+ * The networks this adapter can actually take money on.
+ *
+ * The list is not documentation — it is the key set of `USDT_BY_NETWORK`, and
+ * the two are tied together by the type below so a name can never exist here
+ * without a token contract, a decimals value and a chain id behind it. Before
+ * R-67 the option was `network: string` and the lookup fell back to xlayer, so
+ * `OKX_PAYMENT_NETWORK=xlayer2` produced a challenge that said `xlayer2` and
+ * quoted xlayer's USDT address and chain id: the buyer's wallet was pointed at
+ * a chain that does not exist, and the failure surfaced only in their wallet.
+ */
+export const SUPPORTED_NETWORKS = ['xlayer', 'ethereum', 'base', 'arbitrum', 'bsc'] as const;
+
+export type SupportedNetwork = (typeof SUPPORTED_NETWORKS)[number];
+
+/** Narrowing guard, for the config surfaces that only carry strings. */
+export function isSupportedNetwork(value: string): value is SupportedNetwork {
+  return (SUPPORTED_NETWORKS as readonly string[]).includes(value);
+}
+
+const USDT_BY_NETWORK: Record<SupportedNetwork, { token: string; decimals: number; chainId: number }> = {
   xlayer: { token: '0x55d398326f99059fF775485246999027B3197955', decimals: 6, chainId: 196 },
   ethereum: { token: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6, chainId: 1 },
   base: { token: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', decimals: 6, chainId: 8453 },
@@ -276,7 +296,7 @@ export class OkxPaymentAdapter implements PaymentAdapter {
    */
   async createChallenge(input: { quote: PriceQuote }): Promise<PaymentChallenge> {
     const paymentId = `okx_${randomUUID()}`;
-    const meta = USDT_BY_NETWORK[this.opts.network] ?? USDT_BY_NETWORK['xlayer']!;
+    const meta = USDT_BY_NETWORK[this.opts.network];
     const decimals = this.opts.tokenDecimals ?? meta.decimals;
     const token = this.opts.tokenAddress ?? meta.token;
     const atomicAmount = toAtomic(input.quote.amount, decimals);
@@ -359,7 +379,7 @@ export class OkxPaymentAdapter implements PaymentAdapter {
     // Recompute the EIP-712 digest and verify the signature. The return value
     // is the key the nonce must be burned under, or null when the
     // authorization is not usable.
-    const meta = USDT_BY_NETWORK[this.opts.network] ?? USDT_BY_NETWORK['xlayer']!;
+    const meta = USDT_BY_NETWORK[this.opts.network];
     const nonceKey = await verifyEip3009({
       envelope,
       chainId: meta.chainId,

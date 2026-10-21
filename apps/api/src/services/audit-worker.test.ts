@@ -40,7 +40,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AuditError } from './audit-worker.js';
+import { AuditError, publicErrorMessage } from './audit-worker.js';
 import { buildAuditQueue } from '../queue/build-queue.js';
 import { openIsolatedSqlite, runMigrations } from '../db/client.js';
 import { JobRepository } from '../repositories/job-repository.js';
@@ -96,6 +96,15 @@ function scriptedPipeline(errors: Error[]): { pipeline: AuditPipeline; calls: ()
  */
 function hangingPipeline(): AuditPipeline {
   return { run: () => new Promise<never>(() => undefined) } as unknown as AuditPipeline;
+}
+
+/** A promise plus the handle that settles it, for a test that must hold a worker open. */
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
 }
 
 const RETRYABLE = (): AuditError => new AuditError('UPSTREAM_FAILED', 'upstream blew up', true);
@@ -363,7 +372,71 @@ describe('AuditWorker failure contract (inline driver)', () => {
     // about the upstream — a hung request and a rejected one need different
     // things done about them, and one code cannot say both.
     expect(job.errorCode).toBe('JOB_TIMEOUT');
-    expect(job.error).toMatch(/150ms/);
+    // The caller-visible message is a fixed sentence, not the thrown one: the
+    // thrown one names the configured deadline, which is deployment detail
+    // served to anyone holding a job id (R-65). The 150ms is on the log line.
+    expect(job.error).toBe(publicErrorMessage('JOB_TIMEOUT'));
+    expect(job.error).not.toMatch(/150ms/);
+  });
+
+  it('stores a fixed sentence rather than the thrown message', async () => {
+    // The `error` column is served verbatim by GET /audits/:jobId. What used to
+    // be written there was `auditErr.message`, i.e. whatever the library that
+    // threw put in it — here a connection failure naming an internal host and
+    // port. The code is the diagnostic the caller can act on; the message is
+    // the operator's, and it goes to the log with the jobId on it (R-65).
+    const leak = new Error('connect ECONNREFUSED 10.0.0.5:5432');
+    const { pipeline } = scriptedPipeline([leak]);
+    const job = await runToTerminal({ jobId: 'job_error_message', pipeline });
+
+    expect(job.status).toBe('failed');
+    expect(job.errorCode).toBe('UPSTREAM_FAILED');
+    expect(job.error).toBe(publicErrorMessage('UPSTREAM_FAILED'));
+    expect(job.error).not.toContain('10.0.0.5');
+    expect(job.error).not.toContain('ECONNREFUSED');
+  });
+
+  it('drops a completion whose row no longer belongs to the worker', async () => {
+    // The completion write was the one transition without `expectedStatus`
+    // (R-71), so a worker that finished after its row was reclaimed overwrote
+    // the new owner's state. The reclaim here is simulated by settling the row
+    // from outside while the pipeline is still running — which is exactly the
+    // state a `staleProcessingMs` reclaim produces.
+    const running = gate();
+    const hold = gate();
+    const pipeline = {
+      run: async () => {
+        running.release();
+        await hold.promise;
+        return { report: minimalReport() };
+      },
+    } as unknown as AuditPipeline;
+
+    const { queue, repo } = await harness({ pipeline, retryLimit: 0 });
+    try {
+      await seedQueuedJob(repo, 'job_late_completion');
+      await queue.enqueue({ jobId: 'job_late_completion' });
+      await running.promise;
+
+      const settled = await repo.update(
+        'job_late_completion',
+        { status: 'failed', errorCode: 'REPO_NOT_FOUND' },
+        'processing',
+      );
+      expect(settled.updated).toBe(true);
+
+      hold.release();
+      // `stop()` waits for the accepted job to finish, and finishing includes
+      // the completion write — so this is the deterministic point after it.
+      await queue.stop();
+
+      const after = await repo.findById('job_late_completion');
+      expect(after?.status).toBe('failed');
+      expect(after?.report).toBeNull();
+      expect(after?.errorCode).toBe('REPO_NOT_FOUND');
+    } finally {
+      await queue.stop();
+    }
   });
 
   it('does not re-run a job that already reached a terminal state', async () => {

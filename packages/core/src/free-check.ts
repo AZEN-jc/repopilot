@@ -290,10 +290,20 @@ export class FreeCheckRunner {
 
     // 3. Fetch a slim tree. Hard failures here are propagated so the route
     //    can surface 404 / 403 / 429 / 502 to the caller.
+    //
+    //    The fallback ref is HEAD, not 'main'. This line is only reached with a
+    //    fallback when the metadata call failed (step 2 treats that as
+    //    non-fatal), and 'main' is a guess that is wrong for every repository
+    //    defaulted to master, trunk or develop — the tree request 404s and a
+    //    visible repository is reported as unreachable. HEAD is the symbolic
+    //    ref for whatever the default branch is, so it costs the same single
+    //    request the tier already budgets for. Measured 2026-10-21:
+    //    GET /repos/octocat/Hello-World/git/trees/HEAD returns 200 on a
+    //    master-default repository where /git/trees/main returns 404.
     const entries: FileEntry[] = await this.source.tree(
       parsed.owner,
       parsed.repo,
-      metadata?.defaultBranch ?? 'main',
+      metadata?.defaultBranch ?? 'HEAD',
     );
 
     // 4. Stack detection.

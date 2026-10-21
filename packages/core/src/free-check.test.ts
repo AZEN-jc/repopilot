@@ -206,10 +206,16 @@ describe('FreeCheckRunner — reading the repository', () => {
     expect(source.askedRefs).toEqual(['trunk']);
   });
 
-  it('falls back to main when the metadata carries no branch', async () => {
+  // This case used to assert `['main']` — it pinned the guess as the contract.
+  // 'main' is wrong for every repository defaulted to master, trunk or develop,
+  // and this path is only reached when the metadata call failed, so the guess
+  // was wrong exactly when it mattered. HEAD is the default branch by
+  // definition, and the trees API resolves it (verified 2026-10-21:
+  // /git/trees/HEAD is 200 on a master-default repository where /main is 404).
+  it('falls back to HEAD, not main, when the metadata carries no branch', async () => {
     const { runner, source } = runnerWith(COMPLETE, { metadata: null });
     await runner.run({ repoUrl: 'https://github.com/okx/repopilot', outputLanguage: 'en' });
-    expect(source.askedRefs).toEqual(['main']);
+    expect(source.askedRefs).toEqual(['HEAD']);
   });
 
   it('still produces a report when the metadata call fails', async () => {

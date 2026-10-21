@@ -5,6 +5,7 @@
  * If you add a new env variable, declare it here AND in `.env.example`.
  */
 import { z } from 'zod';
+import { SUPPORTED_NETWORKS } from '@repopilot/okx-adapter';
 
 /**
  * The environment schema, exported so its rejections can be tested without
@@ -52,7 +53,13 @@ export const ConfigSchema = z.object({
 
   PAYMENT_MODE: z.enum(['mock', 'okx']).default('mock'),
   OKX_PAYMENT_ADDRESS: z.string().default(''),
-  OKX_PAYMENT_NETWORK: z.string().default('xlayer'),
+  // A closed set, not a free string (R-67). Each name is a USDT contract, a
+  // decimals value and a chain id in `USDT_BY_NETWORK`; the adapter used to
+  // fall back to xlayer's for anything it did not recognise, which produced a
+  // challenge naming a chain that does not exist while quoting a real token.
+  // `z.enum` here means a typo fails at startup, with the variable named and
+  // the alternatives listed, instead of at the buyer's wallet.
+  OKX_PAYMENT_NETWORK: z.enum(SUPPORTED_NETWORKS).default('xlayer'),
   OKX_X402_VERSION: z.coerce.number().int().default(2),
   // The URL this deployment is reachable at, placed in the 402 challenge's
   // `accepts[].resource`. Empty in dev; production requires it (see
