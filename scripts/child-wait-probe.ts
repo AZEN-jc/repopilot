@@ -15,9 +15,9 @@
  * non-zero. It exists because the shared wait is worth having *only* for its
  * failure branches — the happy path is four lines — and those are the branches
  * no gate exercises. `verify:release` proves the success path on every push
- * (three `waitForApi` calls and one `waitForOutput`); nothing proves that a
- * dead child still reports its exit code, or that the three messages have not
- * collapsed back into the one that named the wrong failure.
+ * (three `waitForApi` calls and one parsed `tools/list` reply); nothing proves
+ * that a dead child still reports its exit code, or that the three messages
+ * have not collapsed back into the one that named the wrong failure.
  *
  * Being suspicious of a refactor here is the reason this file exists: a wait
  * whose branches have been merged reports the same thing in every case, and

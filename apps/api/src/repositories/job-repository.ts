@@ -144,16 +144,39 @@ export class JobRepository {
     return row ? rowToJob(row) : null;
   }
 
+  /**
+   * The most recent jobs, newest first.
+   *
+   * A diagnostic probe, not a feature: the only caller is `/health`, which is
+   * asking whether the table is readable at all. It answered a different
+   * question on each driver, and both answers were wrong in their own way.
+   *
+   * SQLite read **every** row — including the full report text of each — and
+   * sliced the last `limit` in memory, so a health poll on an install with a
+   * few hundred audits materialised all of them to look at one, on every poll,
+   * for as long as a monitor was running. Postgres asked for `LIMIT n` with no
+   * `ORDER BY`, which returns *some* n rows: fine for "is the table there",
+   * nondeterministic for anything else, and a different answer from SQLite's
+   * for the same call.
+   *
+   * `created_at` is indexed on both backends, so the `ORDER BY … LIMIT` is a
+   * backward index scan of n rows rather than a full read.
+   */
   async list(limit = 50): Promise<AuditJob[]> {
     if (this.db.mode === 'sqlite') {
       return this.db.db
         .select()
         .from(jobsSqlite)
+        .orderBy(desc(jobsSqlite.createdAt))
+        .limit(limit)
         .all()
-        .slice(-limit)
         .map(rowToJob);
     }
-    const rows = await this.db.db.select().from(jobsPg).limit(limit);
+    const rows = await this.db.db
+      .select()
+      .from(jobsPg)
+      .orderBy(desc(jobsPg.createdAt))
+      .limit(limit);
     return rows.map(rowToJob);
   }
 

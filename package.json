@@ -43,6 +43,7 @@
     "docs:check": "tsx scripts/docs-facts.ts --check",
     "test:baseline": "tsx scripts/test-baseline.ts",
     "probe:child-wait": "tsx scripts/child-wait-probe.ts",
+    "probe:mcp-tools": "tsx scripts/mcp-tools-probe.ts",
     "audit:diff": "tsx scripts/audit-diff.ts",
     "docker:check": "bash scripts/docker-check.sh",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo",

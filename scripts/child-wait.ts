@@ -37,7 +37,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 export interface SpawnedChild {
   proc: ChildProcess;
   /**
-   * The child's stdout+stderr, most recent last, capped at ~20 KB.
+   * The child's stdout+stderr, most recent last, capped at `CAPTURED_OUTPUT_CHARS`.
    *
    * Captured because the failure it exists to explain is unreadable without
    * it: all three of `verify-release.ts`'s spawn sites used to discard their
@@ -62,8 +62,19 @@ export interface SpawnedChild {
   spawnError(): Error | null;
 }
 
-/** How much of the child's output is kept. */
-const CAPTURED_OUTPUT_CHARS = 20_000;
+/**
+ * How much of the child's output is kept.
+ *
+ * Not a cosmetic number: the caller that parses the tail (`verify:release`'s
+ * `tools/list` step) reads a single JSON line, and a cap smaller than a
+ * legitimate answer truncates the *front* of that line — which turns a working
+ * server into an unparseable response and a gate failure with the wrong cause.
+ * The real payload was 10 824 characters on 2026-10-21 (14 tools with their
+ * descriptions and schemas), so 20 KB left under 2× headroom: one well-written
+ * tool description away from the trap. 64 KB is still nothing to hold, and the
+ * failure message is bounded separately, by `MAX_REPORTED_LINE` below.
+ */
+const CAPTURED_OUTPUT_CHARS = 64_000;
 
 /**
  * Spawn `cmd` with **exactly** the environment given.

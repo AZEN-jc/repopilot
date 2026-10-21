@@ -18,7 +18,8 @@
  *  10. POST with X-PAYMENT: mock:<id>
  *  11. GET /api/v1/audits/:jobId
  *  12. validate report schema, check evidence on findings
- *  13. start MCP server briefly, call listTools, get_repopilot_capabilities
+ *  13. start MCP server briefly, call tools/list, and compare the answer to the
+ *      registrations in the source
  *  14. shutdown + cleanup
  */
 import { mkdirSync, rmSync, existsSync } from 'node:fs';
@@ -27,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { checkAgainstRun } from './test-baseline.js';
 import { spawnChild, waitForAnswer, type SpawnedChild } from './child-wait.js';
+import { registeredToolNames, toolSurfaceProblems, toolsFromResponse } from './mcp-tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
@@ -256,30 +258,6 @@ async function waitForApi(api: SpawnedChild, url: string, label: string): Promis
         return null;
       }
     },
-  );
-}
-
-/**
- * Wait for `pattern` to appear in a child's output, or explain why it will not.
- *
- * The same three cases as `waitForApi`, and the same shared wait — which is
- * the point: this step used to have none of it. It waited a fixed 5 s,
- * discarded the child's stderr (`proc.stderr.on('data', () => {})`), and then
- * threw `no tools in response: ` followed by the empty string it had
- * collected. A reader got a colon and nothing after it.
- *
- * Returns what the child wrote, so a caller can assert on it.
- */
-async function waitForOutput(
-  c: SpawnedChild,
-  pattern: RegExp,
-  label: string,
-  what: string,
-): Promise<string> {
-  return waitForAnswer(
-    c,
-    { label, what, timeoutMs: MCP_TIMEOUT_MS, envVar: 'VERIFY_MCP_TIMEOUT_MS' },
-    async () => (pattern.test(c.output()) ? c.output() : null),
   );
 }
 
@@ -858,8 +836,34 @@ async function main(): Promise<void> {
       mcp.proc.stdin?.write(payload);
       mcp.proc.stdin?.end();
 
-      await waitForOutput(mcp, /"tools"\s*:/, 'mcp server', 'tools/list');
+      // The wait is for the *parsed reply*, not for a word in the buffer: a
+      // server that dies mid-answer leaves a partial line, and the probe simply
+      // says "not yet" until the budget or the exit code settles it.
+      const tools = await waitForAnswer(
+        mcp,
+        {
+          label: 'mcp server',
+          what: 'a tools/list reply carrying the tool list',
+          timeoutMs: MCP_TIMEOUT_MS,
+          envVar: 'VERIFY_MCP_TIMEOUT_MS',
+        },
+        async () => toolsFromResponse(mcp.output()),
+      );
       mcp.proc.kill();
+
+      // What the binary exposes against what the source declares.
+      const problems = toolSurfaceProblems(tools, registeredToolNames(REPO));
+      if (problems.length > 0) {
+        throw new Error(
+          'the binary does not expose what packages/mcp-server/src/index.ts registers:\n  ' +
+            problems.join('\n  '),
+        );
+      }
+
+      console.log(
+        `  ${tools.length} tools, each with a description and an object inputSchema, ` +
+          'matching the registrations in packages/mcp-server/src/index.ts',
+      );
     });
     console.log('  OK');
   } finally {

@@ -902,6 +902,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the other seven green, which is the evidence that the case discriminates
   between the fixed and unfixed loop rather than merely exercising it.
   (R-35, third instance.)
+- **`scripts/mcp-tools.ts` — the MCP gate's assertion, as a function over a
+  string.** `verify:release` step 13 now parses the `tools/list` reply and
+  compares it to the `server.tool()` registrations re-read from
+  `packages/mcp-server/src/index.ts`: every declared tool listed, nothing
+  undeclared, unique names, and a non-empty description plus an object
+  `inputSchema` on each. The parse lives in a module rather than in the step
+  because a check inside the step can only be exercised by starting a server
+  and running thirteen other steps first, which is why the old one never was.
+  `scripts/mcp-tools-probe.ts` (`pnpm probe:mcp-tools`) covers ten answers: a
+  real reply, an error envelope that mentions "tools", a reply under the wrong
+  id, a line truncated by the capture cap, a missing tool, an extra tool, a
+  duplicate name, a tool with no description, a tool whose schema is not an
+  object, and the declared list itself. Reverting the parse to
+  `output.includes('"tools"')` — the old check — turns eight of the ten red.
+  (R-73.)
 
 ### Changed
 
@@ -3139,6 +3154,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads `b?.delta ?? 0`, and what the test's own name — "breakdown records
   every applied rule" — already claimed. Found by reading a real audit's
   JSON, not by reading the code.
+- **`/health` read every audit report on SQLite to count one row.**
+  `JobRepository.list()` did `select().from(jobs).all().slice(-limit)`, so a
+  health probe materialised every column of every row — `report_json` included
+  — on every poll, while the Postgres branch asked for `LIMIT n` with no
+  `ORDER BY` and got whichever rows the planner chose. Both branches now order
+  by `created_at` descending and limit **in the query**, which is a backward
+  index scan on either backend; newest-first became the documented contract
+  because "insertion order" and "some rows" were two different answers to the
+  same call. `sqlite.integration.test.ts` inserts three jobs dated 2099 and
+  asserts `list(2)` is the newest two in that order; reverting the query turns
+  the case red on the order alone. (R-72.)
+- **The MCP step's capture cap was smaller than the answer it had to read.**
+  `child-wait.ts` kept 20 KB of a child's output, and the real `tools/list`
+  payload is 10 824 characters — one well-written tool description away from
+  truncating the front of the single line the step now parses, which would have
+  turned a working server into a parse failure. 64 KB, with the failure
+  *message* still bounded by `MAX_REPORTED_LINE`. (R-73.)
 
 ### Removed
 

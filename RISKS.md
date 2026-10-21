@@ -126,9 +126,9 @@ Active risks the team is aware of and how they are mitigated.
 - [R-71](#r-71--the-completed-write-is-the-one-status-transition-that-is-not-guarded)
   — Open: three guarded transitions and one unguarded
 - [R-72](#r-72--health-reads-every-audit-report-on-sqlite-to-count-one-row)
-  — Open: `select().all().slice(-1)` on the health path
+  — Fixed: `ORDER BY … DESC LIMIT n` on both backends
 - [R-73](#r-73--the-mcp-gate-passes-on-the-word-tools)
-  — Open: the step greps for a substring instead of parsing the response
+  — Fixed: the reply is parsed and compared to the registrations
 - [R-74](#r-74--the-free-check-guesses-main-and-a-test-pins-the-guess)
   — Open: the tolerated metadata failure is the one that guesses the branch
 
@@ -3631,42 +3631,72 @@ the end of a batch. **Trigger:** the first deployment with more than one worker.
 **Severity:** Low.
 **Likelihood:** Certain on SQLite once the table is large; the cost grows with
 the bytes of every report ever written.
-**Status:** **Open** — recorded, not fixed.
+**Status:** Fixed 2026-10-21 — the limit is in the query on both backends.
 
-**What happens.** `JobRepository.list()` on SQLite does
-`select().from(jobs).all().slice(-limit)` (`job-repository.ts:149-154`) — every
-column of every row, `report_json` included, materialised in memory to answer
-`list(1)`. The only caller is `server.ts:237`, on the health path. Postgres takes
-the same call as `.limit(limit)` and pays nothing.
+**What happened.** `JobRepository.list()` on SQLite did
+`select().from(jobs).all().slice(-limit)` — every column of every row,
+`report_json` included, materialised in memory to answer `list(1)`. The only
+caller is the health path, `server.ts:237`. Postgres took the same call as
+`.limit(limit)` and paid nothing for the rows, but with no `ORDER BY` it
+returned *some* n rows, so the two backends disagreed about what the method
+meant.
 
-**Why it is recorded rather than fixed.** The fix is `ORDER BY … DESC LIMIT n`
-plus a reversal, and the ordering column is the question: `rowid` is insertion
-order, `createdAt` is text, and either changes which rows `list()` returns for
-rows written in the same millisecond. That is a behaviour change in a method
-with one caller and no test — worth doing deliberately. **Trigger:** a SQLite
-deployment whose `/health` starts timing out under a load balancer probe.
+**What the fix is.** Both branches now ask for `ORDER BY created_at DESC
+LIMIT n` (`job-repository.ts:165-181`), which is a backward index scan of n
+rows on either backend — `created_at` is indexed on both. The order became part
+of the contract and is written down in the docstring, because the previous
+order was "insertion order" on SQLite and "whichever rows" on Postgres, and a
+caller reading the old code could not have known that.
+
+The ordering question the entry left open — `rowid` versus `createdAt` — was
+answered by the caller count: there is exactly one, it asks for one row, and it
+is asking whether the table is readable. Newest-first is the useful answer for
+a diagnostic, and a tie inside the same millisecond changes which of two
+equally-recent rows a *future* caller sees rather than what this one sees.
+
+`apps/api/src/tests/sqlite.integration.test.ts` inserts three jobs with
+timestamps in 2099 (so the shared database's other rows cannot crowd them out)
+and asserts `list(2)` returns the newest two, newest first. Reverting to
+`.all().slice(-limit)` makes that case red on the order alone.
 
 ## R-73 — The MCP gate passes on the word tools
 
 **Severity:** Low.
-**Likelihood:** Certain: it is what the step does today.
-**Status:** **Open** — recorded, not fixed.
+**Likelihood:** Certain: it is what the step did until 2026-10-21.
+**Status:** Fixed 2026-10-21 — the step parses the reply and compares it to the
+registrations.
 
-**What happens.** The MCP step in `scripts/verify-release.ts` writes
-`initialize`, `notifications/initialized` and `tools/list`, then waits for
-`/"tools"\s*:/` in stdout (`:861`). It never parses the JSON-RPC response, never
-checks the `id`, never counts the tools against the 14 the documentation
-advertises, and never issues a `tools/call`. A binary that answers
-`{"tools": []}` — or an error object that happens to contain the key — passes.
+**What happened.** The MCP step in `scripts/verify-release.ts` wrote
+`initialize`, `notifications/initialized` and `tools/list`, then waited for
+`/"tools"\s*:/` in stdout. It never parsed the JSON-RPC response, never checked
+the `id`, never counted the tools against the 14 the documentation advertises,
+and never issued a `tools/call`. A binary that answered `{"tools": []}` — or an
+error object that happened to contain the key — passed.
 
-**Why it is recorded rather than fixed.** The step's stated purpose is "the
-binary starts and speaks the protocol", and
-`packages/mcp-server/src/index.test.ts` already compares the registration
-against `ADVERTISED_TOOLS` in both directions. The gap is that nothing joins the
-two: the test proves the *library* registers 14 tools, the gate proves the
-*binary* prints something, and a stale `dist/cli.js` satisfies the second while
-failing the first. **Trigger:** a release where `dist` is stale — which is the
-exact failure the step exists to catch.
+**What the fix is.** The reply is parsed and identified by the request id the
+step sent, then compared to the `server.tool()` registrations re-read from
+`packages/mcp-server/src/index.ts`: every declared tool must be listed, nothing
+undeclared may be, names must be unique, and every tool must carry a non-empty
+description and an object `inputSchema`. `toolsFromResponse`,
+`toolSurfaceProblems` and `registeredToolNames` live in `scripts/mcp-tools.ts`
+(`:67`, `:91`, `:145`), and the step calls them at
+`verify-release.ts:850-855`.
+
+The reason the parse is a module and not ten lines in the gate: a check buried
+in a script can only be exercised by starting a server and running thirteen
+other steps first, which is why the old one never was. `scripts/mcp-tools-probe.ts`
+(`pnpm probe:mcp-tools`) feeds it ten answers — a real reply, an error envelope
+that mentions "tools", a reply under the wrong id, a line truncated by the
+capture cap, a missing tool, an extra tool, a duplicate name, a tool with no
+description, a tool whose schema is not an object, and the declared list itself.
+Reverting the parse to `output.includes('"tools"')` turns eight of the ten red,
+including the three that the old check passed.
+
+One number moved with it: `child-wait.ts`'s capture cap was 20 KB and the real
+`tools/list` payload is 10 824 characters, so a well-written tool description
+would have truncated the line and turned a working server into a parse failure.
+The cap is 64 KB now, and the failure *message* stays bounded separately by
+`MAX_REPORTED_LINE`.
 
 ## R-74 — The free check guesses main, and a test pins the guess
 
