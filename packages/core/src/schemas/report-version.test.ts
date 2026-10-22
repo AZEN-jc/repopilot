@@ -19,13 +19,25 @@ function withUnknownVersion(version: string) {
 }
 
 describe('report version', () => {
-  it('writes 1.4 on anything newly built', () => {
-    expect(REPORT_VERSION).toBe('1.4');
+  it('writes 1.5 on anything newly built', () => {
+    expect(REPORT_VERSION).toBe('1.5');
   });
 
-  it('parses a 1.4 report', () => {
+  it('parses a 1.5 report', () => {
+    expect(() => ReportSchema.parse(withVersion('1.5'))).not.toThrow();
+    expect(ReportSchema.parse(withVersion('1.5')).reportVersion).toBe('1.5');
+  });
+
+  it('still parses a 1.4 report, and it carries no manifest claim', () => {
+    // 1.5 added `manifests`, and it is optional on purpose. A stored 1.4
+    // report never looked, so the field is absent — which the quality
+    // contract reads as "unknown", not as "none". Defaulting it to `[]` would
+    // have made every stored report assert something it never checked, which
+    // is the defect the field exists to remove (R-58).
     expect(() => ReportSchema.parse(withVersion('1.4'))).not.toThrow();
-    expect(ReportSchema.parse(withVersion('1.4')).reportVersion).toBe('1.4');
+    const parsed = ReportSchema.parse(withVersion('1.4'));
+    expect(parsed.reportVersion).toBe('1.4');
+    expect(parsed.manifests).toBeUndefined();
   });
 
   it('still parses a 1.3 report', () => {

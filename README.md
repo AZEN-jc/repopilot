@@ -55,8 +55,11 @@ audit. It does not custody funds or read private keys.
   what moved: the score delta per dimension, the exact scoring rules
   that changed, and which findings were resolved, appeared or persist.
 - **Built for AI agents.** The report is a single JSON document with a
-  stable schema (`reportVersion: "1.3"`; `"1.2"`, `"1.1"` and `"1.0"` still parse). The MCP
-  server exposes <!-- docs-facts:mcp-tool-count -->14<!-- docs-facts:end -->
+  stable schema
+  (`reportVersion: "<!-- docs-facts:report-version -->1.5<!-- docs-facts:end -->"`;
+  <!-- docs-facts:report-versions -->`"1.4"`, `"1.3"`, `"1.2"`, `"1.1"` and `"1.0"`<!-- docs-facts:end -->
+  still parse). The MCP server exposes
+  <!-- docs-facts:mcp-tool-count -->14<!-- docs-facts:end -->
   tools and marks which of them are free, so any MCP-compatible client
   can drive the whole loop.
 - **No surprise charges, and no tiers.** A read-only triage probe is free

@@ -73,7 +73,7 @@ payment, the limits **this deployment** enforces, pricing, and cache behaviour.
     "outputLanguage": "en | zh-CN"
   },
   "outputs": {
-    "report": "JSON document conforming to the RepoPilot Report schema (1.3)."
+    "report": "JSON document conforming to the RepoPilot Report schema (1.5)."
   },
   "endpoints": {
     "freeCheck": {
@@ -301,7 +301,7 @@ envelope plus the full `Report`:
 {
   "jobId": "job_8a3b9d...",
   "status": "completed",
-  "report": { "reportVersion": "1.3", "scores": { "overall": 82 }, "...": "..." }
+  "report": { "reportVersion": "1.5", "scores": { "overall": 82 }, "...": "..." }
 }
 ```
 
@@ -374,7 +374,7 @@ If the payment verifies, the route runs the pipeline and returns
   "jobId": "job_8a3b9d...",
   "status": "completed",
   "report": {
-    "reportVersion": "1.3",
+    "reportVersion": "1.5",
     "repository": { "url": "...", "owner": "...", "name": "..." },
     "summary": "...",
     "detectedStack": ["TypeScript", "Node.js"],
@@ -443,7 +443,7 @@ Fetch the current state of a job.
 {
   "jobId": "job_8a3b9d...",
   "status": "completed",
-  "report": { "reportVersion": "1.3", "...": "..." },
+  "report": { "reportVersion": "1.5", "...": "..." },
   "createdAt": "2026-09-20T10:30:00.000Z",
   "completedAt": "2026-09-20T10:30:09.000Z",
   "cache": { "hit": false, "keyVersion": "v1", "expiresAt": "2026-09-21T10:30:09.000Z" }
@@ -488,7 +488,7 @@ Every fix plan for a completed audit, derived from the stored report.
     "commitSha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
   },
   "generatedAt": "2026-09-20T10:30:00.000Z",
-  "reportVersion": "1.3",
+  "reportVersion": "1.5",
   "plans": [
     {
       "schemaVersion": "1.0",

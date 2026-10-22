@@ -292,6 +292,30 @@ export const ReportSchema = z.object({
   repository: RepositorySchema,
   summary: z.string(),
   detectedStack: z.array(z.string()),
+  /**
+   * Dependency manifests found in the tree, repo-relative.
+   *
+   * Three states, and the contract reads the difference:
+   *
+   *   - absent        — nothing is claimed. Either the report predates the
+   *                     field, or the tree listing was truncated and the walk
+   *                     was not complete.
+   *   - `[]`          — the whole tree was walked and holds none.
+   *   - `['package.json', …]` — these were there.
+   *
+   * It exists because two contract checks are *unanswerable* without it. Both
+   * `testing.test-script` and `release.build-path` are decided by the absence
+   * of a finding, and their rules only fire when a manifest exists — so a
+   * repository with no manifest at all answered `pass` for "a test command is
+   * declared" without anything having been checked (R-58). `detectedStack`
+   * looks like it could answer this and cannot: it is a display label, and
+   * "not Node" does not mean "no package.json".
+   *
+   * Optional rather than defaulted to `[]` on purpose. A default would make
+   * every stored 1.4 report assert something it never looked at, which is the
+   * same defect the field exists to remove, one level up.
+   */
+  manifests: z.array(z.string()).optional(),
   scores: ScoresSchema,
   blockers: z.array(FindingSchema),
   documentationGaps: z.array(FindingSchema),

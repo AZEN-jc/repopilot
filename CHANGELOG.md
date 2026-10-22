@@ -16,6 +16,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Report.manifests`, the list of dependency manifests the tree holds, and
+  `REPORT_VERSION` 1.5.** The quality contract is a pure function of a `Report`,
+  and two of its checks are answered by rules that only run when a root
+  `package.json` exists — so the contract had no way to tell "the rule found
+  nothing" from "the rule could not look". The report now says which manifests
+  are there, read off the same unfiltered path list the existence checks use
+  (eighteen basenames, lockfiles deliberately excluded: a lockfile records
+  resolved versions, it does not declare a project).
+  The field is **optional and has no default**, which is the point. Absent
+  means nothing is claimed — the report predates the field, or the tree listing
+  was truncated; `[]` means "the tree holds none"; a list means "these were
+  there". Defaulting to `[]` would have made every stored 1.4 report assert
+  something it never looked at — the same class of error as the one being
+  fixed, one layer down — and a capped listing cannot support "none" either, so
+  the builder omits the field when `truncated` is set. `ReportSchema` still
+  parses a 1.4 report, and its `manifests` stays `undefined`.
+- **`report-version` / `report-versions` blocks, and a check that reads every
+  prose statement of the schema version.** The version is the one number in
+  these documents that changes on every schema change, so it is the one most
+  likely to be left behind — and the least visible when it is, because
+  "schema (1.3)" reads as a fact rather than as a claim with a date on it. It
+  had drifted twice: README and `docs/API.md` said `1.3` while the code said
+  `1.4`, and `PROJECT_STATE.md` said `1.1` with a two-element supported list.
+  All three say `1.5` now, and so do the five `"reportVersion": "1.3"` samples
+  in `docs/API.md` and `docs/MCP_CLIENT_SETUP.md`.
+  README's bullet is now two generated blocks, and `checkReportVersionClaims()`
+  reads the three unambiguous phrasings in every `BLOCK_DOCS` document —
+  `Report schema (X)`, `` `REPORT_VERSION` is `X` `` and
+  `` `SUPPORTED_REPORT_VERSIONS = [...]` ``. The claims inside JSON samples stay
+  hand-written, because a marker there would be copied by the reader and
+  because `FreeCheckReport` legitimately shows `"1.0"`; the patterns matching
+  nothing is itself a failure, so a reworded sentence cannot leave a check that
+  looks at nothing. (Four injected versions, three caught by the check and one
+  by the block comparison.)
 - **`health-response-fields`, the `/health` table rendered from its zod
   schema.** `docs/API.md` was on the list of documents that "carry no derivable
   facts", which was true of the endpoints and false of this payload: `queue`
@@ -1778,8 +1812,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parses), written by the builder and read by `collectFindings`;
   `REPORT_VERSION` moved to 1.4. The remaining half — a rule that never fires
   because no manifest exists is still read as a pass — is recorded as R-58
-  rather than guessed at, because the report carries no evidence of which files
-  exist. (R-48.)
+  rather than guessed at,   because the report carries no evidence of which files
+  exist. (R-48.) The half left open there is closed by the entry below.
+- **The contract still read a rule that could not run as a rule that passed.**
+  R-48 gave the contract the findings it had been missing; it did not give it a
+  way to know a rule *could not run*. `TEST-002` and `BUILD-002` only fire when
+  a root `package.json` exists, so a documentation repo, a Go project, a Rust
+  project with no root `Cargo.toml` answered `testing.test-script => pass` for
+  "a test command is declared" without anything having been read — and
+  `release.build-path => pass` in the sibling case, where `noDocker.length === 0
+  || noRunScript.length === 0` came out `false || true` because the second half
+  was inapplicable rather than satisfied. Both checks now consult
+  `Report.manifests` (above) and answer `warn` with the reason in `observed`
+  when the file they read is not in the tree. `warn`, not a new
+  `not_applicable` status: `pass_with_warnings` is already documented as
+  "nothing blocking, but something could not be evaluated", and a repository
+  with no manifest is not failing anything by having none. A report that
+  predates the field keeps the old reading, because it carries no claim either
+  way and the old reading is all it can support. The root file specifically —
+  a monorepo whose manifests all sit under `packages/*` is in the same position
+  as one with none, and answering from a nested manifest would be a new guess
+  in place of the old one. (R-58.)
 
 - **Every cached audit on Postgres failed, retryably, forever.**
   `ReportCacheRepository.findByKey` did `JSON.parse(row.report)`. The column is

@@ -23,11 +23,27 @@
  * runs. It told every buyer of every report that an LLM analyzer was installed
  * and switched off. Nothing else in the report changed, so 1.2 reports still
  * parse; the version moved because a key left a map that consumers read.
+ *
+ * Bumped to 1.4 when `reproducibilityFindings` and `deploymentFindings` were
+ * written down. Both were computed and consumed by the builder and never
+ * stored, so every rule the quality contract asked about by id was absent from
+ * the report the contract read — and the rules with inverted polarity
+ * (`CI-001`, `TEST-002`, `BUILD-001`) then answered `pass` for a repository
+ * with no CI, no test script and no build path. Both default to `[]`, so a
+ * stored 1.3 report parses and the default is the true answer for it: that
+ * build computed those findings and did not write them.
+ *
+ * Bumped to 1.5 when `manifests` was added — absent, not defaulted to `[]`,
+ * because absent means "this report predates the field" and `[]` means "the
+ * tree holds none". The quality contract reads the difference to decide
+ * whether "a test command is declared" is a question it can answer (R-58), so
+ * two reports of the same repository from different builds answer differently:
+ * that is a content change, and it is what the cache key's version is for.
  */
-export const REPORT_VERSION = '1.4' as const;
+export const REPORT_VERSION = '1.5' as const;
 
 /** Every report version this build can parse, oldest first. */
-export const SUPPORTED_REPORT_VERSIONS = ['1.0', '1.1', '1.2', '1.3', '1.4'] as const;
+export const SUPPORTED_REPORT_VERSIONS = ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5'] as const;
 
 export const CORE_VERSION = '0.1.0';
 

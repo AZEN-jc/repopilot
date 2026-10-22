@@ -84,6 +84,69 @@ describe('ReportBuilder', () => {
     expect(r.report.blockers).toEqual([]);
   });
 
+  /**
+   * R-58. The quality contract needs to know whether the files its rules read
+   * exist at all, and the report is the only thing it is given. These two
+   * cases pin the evidence: the manifest is listed, the lockfile is not
+   * (a lockfile is not a manifest), and "none" is an empty list rather than
+   * an absent field — absence means the report predates the field.
+   */
+  it('records which manifests the tree holds, and no lockfiles', () => {
+    const { entries, contents } = cleanRepo();
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries,
+      contents,
+      truncated: false,
+      auditMode: 'quick',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: false,
+    });
+    expect(r.report.manifests).toEqual(['package.json']);
+    expect(r.report.manifests).not.toContain('pnpm-lock.yaml');
+  });
+
+  it('records an empty list when the tree holds no manifest at all', () => {
+    const entries = [entry('README.md'), entry('LICENSE')];
+    const contents = new Map<string, string>([
+      ['README.md', '# Title\n'],
+      ['LICENSE', 'MIT\n'],
+    ]);
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries,
+      contents,
+      truncated: false,
+      auditMode: 'quick',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: false,
+    });
+    expect(r.report.manifests).toEqual([]);
+  });
+
+  it('claims nothing about manifests when the listing was truncated', () => {
+    // `[]` would say "the tree holds none", and a capped listing cannot
+    // support that: the manifest may be in the part GitHub did not return.
+    const entries = [entry('README.md'), entry('LICENSE')];
+    const contents = new Map<string, string>([
+      ['README.md', '# Title\n'],
+      ['LICENSE', 'MIT\n'],
+    ]);
+    const r = new ReportBuilder().build({
+      metadata: baseMetadata,
+      entries,
+      contents,
+      truncated: true,
+      auditMode: 'quick',
+      target: 'open_source',
+      outputLanguage: 'en',
+      includeLaunchCopy: false,
+    });
+    expect(r.report.manifests).toBeUndefined();
+  });
+
   it('flags missing README as a documentation gap', () => {
     const entries = [entry('package.json'), entry('LICENSE')];
     const contents = new Map<string, string>([

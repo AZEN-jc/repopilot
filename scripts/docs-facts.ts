@@ -28,6 +28,8 @@
  *   compose-services      the compose service table
  *   fixture-count         the number of fixture repositories
  *   health-response-fields the `/health` response fields, from its zod schema
+ *   report-version        the current `REPORT_VERSION`
+ *   report-versions       the older versions a stored report may still carry
  *
  * Which documents are covered is itself a rule
  * --------------------------------------------
@@ -65,7 +67,7 @@
  * which is worse than the sentence in ARCHITECTURE.md naming the nine calls in
  * order and claiming no count at all.
  *
- * Six checks carry no generated block at all — they assert an invariant and
+ * Seven checks carry no generated block at all — they assert an invariant and
  * print nothing:
  *
  *   1. the `BILLING` map and the `server.tool()` registrations agree;
@@ -74,7 +76,9 @@
  *   4. `CHANGELOG.md` names each release category at most once per release;
  *   5. every statement of an audit price agrees, and the atomic registration
  *      values are those prices;
- *   6. every `path:line` a document cites exists, and the line exists in it.
+ *   6. every `path:line` a document cites exists, and the line exists in it;
+ *   7. every prose statement of the report schema version states the current
+ *      one.
  *
  * Check 3 is the one that already paid for itself: `PROJECT_STATE.md` told an
  * operator to run `pnpm start:api` and `pnpm start:worker`, and neither has
@@ -102,6 +106,16 @@
  * because it was written down here once, as 66, and had drifted to 68 without
  * anything noticing — and `checkCitations()` states the three ways it resolves
  * a path and the one way that makes it permissive.
+ *
+ * Check 7 exists because the schema version is the one number in these
+ * documents that changes on every schema change, and it had drifted twice:
+ * README and `docs/API.md` said `1.3` while the code said `1.4`, and
+ * `PROJECT_STATE.md` said `1.1` with a two-element supported list. A version
+ * written in prose reads as a fact rather than as a claim with a date on it,
+ * so nothing about it invites a second look. It is checked rather than
+ * rendered because the claims sit inside JSON samples, where a marker would be
+ * copied by the reader; only the unambiguous phrasings are matched, and the
+ * patterns matching nothing is itself a failure.
  *
  * Every source read is a text file in this repository. No build, no network,
  * no environment. The one thing here that is not a single file read is the
@@ -375,12 +389,70 @@ function describeZodField(
   );
 }
 
+/**
+ * The report schema version, from `packages/core/src/utils/constants.ts`.
+ *
+ * Two documents state it in prose — README's "stable schema
+ * (`reportVersion: …`)" bullet and `docs/API.md`'s "schema (…)" — and both had
+ * drifted by the time this was written: README still said `1.3` when the code
+ * said `1.4`, and `PROJECT_STATE.md` said `1.1`. A version is the one number in
+ * these documents that changes on *every* schema change, which makes it the
+ * one most likely to be left behind, and the least visible when it is: "schema
+ * (1.3)" reads as a fact, not as a claim with a date on it.
+ *
+ * So the current version and the still-parse list are rendered, not written.
+ * The list is read oldest-first from the constant and emitted newest-first,
+ * because that is the order the sentence wants.
+ *
+ * What this does **not** cover: the `"reportVersion": "…"` lines inside the
+ * JSON examples. Those are samples of an emitted document rather than claims
+ * about the schema, they sit in fenced blocks where a marker cannot go, and
+ * `docs/MCP_CLIENT_SETUP.md` legitimately shows `"1.0"` for
+ * `FreeCheckReport`, a different schema that happens to share the field name.
+ * They are kept by hand, and this docstring is the record that they are.
+ */
+function readReportVersions(): { current: string; older: string[]; all: string[] } {
+  const rel = 'packages/core/src/utils/constants.ts';
+  const src = read(rel);
+
+  const current = /export const REPORT_VERSION = '([0-9]+(?:\.[0-9]+)*)'/.exec(src);
+  if (current === null) {
+    throw new Error(`docs-facts: ${rel} has no REPORT_VERSION = '<version>' literal`);
+  }
+
+  const supported = /export const SUPPORTED_REPORT_VERSIONS = \[([^\]]*)\]/.exec(src);
+  if (supported === null) {
+    throw new Error(`docs-facts: ${rel} has no SUPPORTED_REPORT_VERSIONS array`);
+  }
+  const all = [...capture(supported, 1).matchAll(/'([0-9]+(?:\.[0-9]+)*)'/g)].map((m) =>
+    capture(m, 1)
+  );
+
+  const now = capture(current, 1);
+  if (!all.includes(now)) {
+    throw new Error(
+      `docs-facts: ${rel} says REPORT_VERSION is ${now} but SUPPORTED_REPORT_VERSIONS ` +
+        `does not list it (${all.join(', ')}). Fix the constants before rendering docs.`
+    );
+  }
+  const older = all.filter((v) => v !== now).reverse();
+  if (older.length === 0) {
+    throw new Error(
+      `docs-facts: ${rel} lists no version older than ${now}, so README's "… still ` +
+        'parse" clause has nothing to name. Either keep the old version in ' +
+        'SUPPORTED_REPORT_VERSIONS or reword that sentence.'
+    );
+  }
+  return { current: now, older, all };
+}
+
 const TOOLS = readMcpTools();
 const WORKSPACES = readWorkspaces();
 const SERVICES = readComposeServices();
 const FIXTURES = readFixtures();
 const SCRIPTS = readRootScripts();
 const DOC_FILES = readDocFiles();
+const REPORT_VERSIONS = readReportVersions();
 
 /* ──────────────────────────────── renderers ─────────────────────────────── */
 
@@ -418,6 +490,19 @@ function renderToolsBox(): string {
 }
 
 const RENDERERS: Record<string, () => string> = {
+  'report-version': () => REPORT_VERSIONS.current,
+
+  /**
+   * The versions a stored report may still carry, newest first, as the
+   * backticked literals README's sentence needs — with the serial comma,
+   * because the list is three or more and the sentence is prose.
+   */
+  'report-versions': () => {
+    const quoted = REPORT_VERSIONS.older.map((v) => `\`"${v}"\``);
+    const last = quoted.pop() ?? '';
+    return quoted.length === 0 ? last : `${quoted.join(', ')} and ${last}`;
+  },
+
   'mcp-tool-count': () => String(TOOLS.length),
 
   'mcp-tools': () => {
@@ -504,7 +589,7 @@ const BLOCK_RE = /<!--\s*docs-facts:([a-z0-9-]+)\s*-->([\s\S]*?)<!--\s*docs-fact
  * of the mechanism that was still implicit.
  */
 const BLOCK_DOCS: Record<string, string[]> = {
-  'README.md': ['fixture-count', 'mcp-tool-count'],
+  'README.md': ['fixture-count', 'mcp-tool-count', 'report-version', 'report-versions'],
   'PROJECT_STATE.md': [
     'compose-service-count',
     'compose-services',
@@ -769,6 +854,103 @@ function checkCommandReferences(): Problem[] {
           });
         }
       });
+  }
+  return problems;
+}
+
+/**
+ * A document that states the report schema version must state the one this
+ * build emits.
+ *
+ * The version is the only number in these documents that changes on every
+ * schema change, so it is the one most likely to be left behind — and the
+ * least visible when it is: "schema (1.3)" reads as a fact, not as a claim
+ * with a date on it. It had drifted twice before this check existed: README
+ * and `docs/API.md` said `1.3` while the code said `1.4`, and
+ * `PROJECT_STATE.md` still said `1.1` with a two-element supported list.
+ *
+ * Only the claims that are unambiguous are checked, and only in the documents
+ * that state current facts (`BLOCK_DOCS`). `CHANGELOG.md`, `RISKS.md` and
+ * `DECISIONS.md` are historical records — every version in them was true when
+ * written — and the `"reportVersion": "1.0"` samples in `docs/API.md` and
+ * `docs/MCP_CLIENT_SETUP.md` belong to `FreeCheckReport`, a different schema
+ * that happens to share the field name (`packages/core/src/schemas/inputs.ts`).
+ * A check that flagged either would be wrong, and a check with an exception
+ * carved into it is not a check. Three patterns are therefore matched, all of
+ * them prose:
+ *
+ *   - ``Report schema (X)`` — the capabilities response, which the code builds
+ *     from `${REPORT_VERSION}`;
+ *   - ```REPORT_VERSION` is `X` `` — a document describing the constant;
+ *   - ``SUPPORTED_REPORT_VERSIONS = ['…']`` — the same, as a list.
+ *
+ * The patterns matching nothing is itself a failure: that means the prose was
+ * reworded and this check silently stopped looking, which is the failure mode
+ * D-034 is about.
+ */
+function checkReportVersionClaims(): Problem[] {
+  const problems: Problem[] = [];
+  const { current, all } = REPORT_VERSIONS;
+  let claims = 0;
+
+  for (const path of Object.keys(BLOCK_DOCS)) {
+    read(path)
+      .split('\n')
+      .forEach((line, i) => {
+        const where = `${path}:${i + 1}`;
+
+        const schema = /Report schema \(([0-9]+(?:\.[0-9]+)*)\)/.exec(line);
+        if (schema !== null) {
+          claims += 1;
+          const stated = capture(schema, 1);
+          if (stated !== current) {
+            problems.push({
+              where,
+              message:
+                `says the report schema is ${stated}; this build emits ${current}. ` +
+                `Update the sentence, or fix REPORT_VERSION if the code is wrong.`,
+            });
+          }
+        }
+
+        const constant = /`REPORT_VERSION`\s+is\s+`([0-9]+(?:\.[0-9]+)*)`/.exec(line);
+        if (constant !== null) {
+          claims += 1;
+          const stated = capture(constant, 1);
+          if (stated !== current) {
+            problems.push({
+              where,
+              message: `says \`REPORT_VERSION\` is ${stated}; it is ${current}.`,
+            });
+          }
+        }
+
+        const list = /`SUPPORTED_REPORT_VERSIONS\s*=\s*\[([^\]]*)\]`/.exec(line);
+        if (list !== null) {
+          claims += 1;
+          const stated = [...capture(list, 1).matchAll(/'([0-9]+(?:\.[0-9]+)*)'/g)].map((m) =>
+            capture(m, 1)
+          );
+          if (stated.join(',') !== all.join(',')) {
+            problems.push({
+              where,
+              message:
+                `lists SUPPORTED_REPORT_VERSIONS as [${stated.join(', ')}]; the ` +
+                `constant is [${all.join(', ')}].`,
+            });
+          }
+        }
+      });
+  }
+
+  if (claims === 0) {
+    problems.push({
+      where: 'scripts/docs-facts.ts',
+      message:
+        'checkReportVersionClaims() matched no version claim in any BLOCK_DOCS ' +
+        'document. The prose was reworded; fix the patterns rather than leaving ' +
+        'a check that looks at nothing.',
+    });
   }
   return problems;
 }
@@ -1759,6 +1941,7 @@ const problems = [
   ...checkBlocks(),
   ...checkIndex(),
   ...checkCommandReferences(),
+  ...checkReportVersionClaims(),
   ...checkDockerRunConfig(),
   ...checkChangelogStructure(),
   ...checkRisksRegister(),

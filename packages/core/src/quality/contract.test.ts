@@ -169,6 +169,79 @@ describe('repository, testing, ci and release blockers', () => {
   });
 });
 
+/**
+ * R-58: two checks read a root `package.json`. When the repository has none,
+ * their rules stay silent — and silence was being read as agreement, so a Go,
+ * Rust or documentation repo was told "a test command is declared" without
+ * anything having been read. The report now carries `manifests`, and the
+ * checks answer "not evaluated" instead of inventing a pass.
+ */
+describe('a check the report cannot answer (R-58)', () => {
+  function observed(result: ReturnType<typeof evaluateQualityContract>, checkId: string) {
+    return result.sections.flatMap((s) => s.checks).find((c) => c.id === checkId)?.observed;
+  }
+
+  it('warns instead of passing the test-script check when no manifest exists', () => {
+    const result = evaluateQualityContract(clean({ manifests: [] }));
+    expect(checkStatus(result, 'testing.test-script')).toBe('warn');
+    // A warning is not a blocker. Having no dependency manifest fails nothing.
+    expect(result.ship).toBe(true);
+    expect(result.status).toBe('pass_with_warnings');
+  });
+
+  it('says why it could not answer, rather than warning in silence', () => {
+    const result = evaluateQualityContract(clean({ manifests: [] }));
+    expect(observed(result, 'testing.test-script')).toContain('not evaluated');
+    expect(observed(result, 'testing.test-script')).toContain('package.json');
+  });
+
+  it('warns on the build path when there is neither a Dockerfile nor a manifest', () => {
+    // BUILD-001 fires (no Dockerfile). BUILD-002 cannot fire without a root
+    // `package.json`, and its silence used to be read as "a start script is
+    // declared" — a pass for a repository with no build path at all.
+    const result = evaluateQualityContract(
+      reportWithFindings([withRule('BUILD-001')], { manifests: [] })
+    );
+    expect(checkStatus(result, 'release.build-path')).toBe('warn');
+    expect(result.ship).toBe(true);
+  });
+
+  it('still passes the build path when a Dockerfile is there', () => {
+    // BUILD-001 absent is the only evidence of a Dockerfile this contract
+    // has, and one path is enough — the missing manifest does not spoil it.
+    const result = evaluateQualityContract(clean({ manifests: [] }));
+    expect(checkStatus(result, 'release.build-path')).toBe('pass');
+  });
+
+  it('answers exactly as before when the report names package.json', () => {
+    const result = evaluateQualityContract(
+      reportWithFindings([withRule('TEST-002'), withRule('BUILD-001'), withRule('BUILD-002')], {
+        manifests: ['package.json'],
+      })
+    );
+    expect(checkStatus(result, 'testing.test-script')).toBe('fail');
+    expect(checkStatus(result, 'release.build-path')).toBe('fail');
+    expect(result.ship).toBe(false);
+  });
+
+  it('answers exactly as before when the report predates the field', () => {
+    // A stored 1.4 report carries no claim about which files exist, so there
+    // is nothing to answer from and the old reading stands unchanged.
+    const silent = evaluateQualityContract(
+      reportWithFindings([withRule('BUILD-001'), withRule('BUILD-002')])
+    );
+    expect(checkStatus(silent, 'release.build-path')).toBe('fail');
+    expect(checkStatus(evaluateQualityContract(clean()), 'testing.test-script')).toBe('pass');
+  });
+
+  it('ignores a nested manifest, because the rules read the root one', () => {
+    // `packages/api/package.json` is not what TEST-002 opens, so a monorepo
+    // laid out that way is in the same position as one with no manifest.
+    const result = evaluateQualityContract(clean({ manifests: ['packages/api/package.json'] }));
+    expect(checkStatus(result, 'testing.test-script')).toBe('warn');
+  });
+});
+
 describe('custom contracts', () => {
   it('lets a project tolerate a known credential', () => {
     const relaxed: QualityContract = QualityContractSchema.parse({

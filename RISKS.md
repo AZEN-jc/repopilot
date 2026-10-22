@@ -98,7 +98,7 @@ Active risks the team is aware of and how they are mitigated.
 - [R-57](#r-57--payment-challenges-and-receipts-live-in-process-memory)
   — Accepted: correct for one replica, broken for two
 - [R-58](#r-58--two-contract-checks-read-the-rule-did-not-run-as-the-rule-passed)
-  — Accepted: the contract has no way to say "not applicable"
+  — The report now says which manifests exist, so "could not look" is a warning
 - [R-59](#r-59--an-added-line-starting-with-a-double-plus-was-read-as-a-file-header)
   — The header filter was a prefix test, so `++x` was dropped and the count slipped
 - [R-60](#r-60--a-timestamp-tie-named-the-newer-commit-as-the-introduction)
@@ -3300,25 +3300,59 @@ with more than one replica, this becomes a High and must be fixed first.**
 
 **Severity:** Medium
 **Likelihood:** Any repository with no dependency manifest at all.
-**Status:** **Accepted residual** — the half that had an always-firing rule is
-fixed (R-48); this half needs a signal the report does not carry.
+**Status:** Fixed 2026-10-22.
 
-**What happens.** `testing.test-script` and `release.build-path` are answered
+**What happened.** `testing.test-script` and `release.build-path` were answered
 by the *absence* of `TEST-002` / `BUILD-002`. Those rules only fire when a
 `package.json` exists, so a repository with no manifest at all — a bare
 documentation repo, a Go project, a Rust project with no `Cargo.toml` at the
-root — answers `pass` for "a test command is declared" without anything having
-been checked. `release.build-path` is worse in one direction: it is
+root — answered `pass` for "a test command is declared" without anything having
+been checked. `release.build-path` was worse in one direction: it was
 `ok = noDocker.length === 0 || noRunScript.length === 0`, so a missing
-Dockerfile plus an inapplicable run-script rule reads as "has a build path".
+Dockerfile plus an inapplicable run-script rule read as "has a build path".
+This is the polarity trap in its general form: the rule asks "is this defect
+present?", so a rule that could not run is indistinguishable from a rule that
+found nothing.
 
-**Why it is recorded rather than fixed.** The contract is a pure function of a
-`Report`, and the report carries no evidence of *which* files exist — so
-"applicable" cannot be computed from it. The two ways out are a positive
-signal in the report (a manifest record, a `REPORT_VERSION` bump) or a third
-check status (`not_applicable`) threaded through every section. Both are
-larger than the defect, which only affects repositories that ship no manifest;
-`detectedStack` looks like a shortcut and is a display label, not a fact.
+**What the fix is.** The report now carries `manifests`: the dependency
+manifests found in the tree, from the same unfiltered path list the existence
+checks read. `REPORT_VERSION` moves to `1.5`. The field is **optional**, and
+absent means nothing is claimed — the report predates the field, or the tree
+listing was truncated — rather than "there are none". A stored 1.4 report
+asserts nothing about which files exist, and defaulting to `[]` would make it
+assert something it never looked at; a truncated listing cannot support "the
+tree holds none" either, so the builder omits the field there too.
+
+Both checks read it through `rootManifestState()`, which answers `true` /
+`false` / `undefined` for the **root** `package.json` specifically, because that
+is the file `TEST-002` and `BUILD-002` open. When it is `false`, the check
+returns `warn` with the reason in `observed` instead of a `pass`:
+
+> not evaluated: the repository has no root package.json, which is the only
+> file this rule reads
+
+`warn`, not a new `not_applicable` status, because the contract's vocabulary
+already means this — `pass_with_warnings` is documented as "nothing blocking,
+but something could not be evaluated". It does not block: having no manifest
+fails nothing. It simply does not answer the question, and a green tick said it
+did.
+
+A monorepo whose manifests all sit under `packages/*` lands in the same bucket
+as one with none. That is deliberate: `TEST-002` reads the root file, so
+answering from a nested manifest would be a new guess in place of the old one.
+
+**Verification.** Seven cases in `contract.test.ts` under *a check the report
+cannot answer*: `manifests: []` warns on `testing.test-script` and leaves
+`ship` true with status `pass_with_warnings`; the same with `BUILD-001` present
+warns on `release.build-path`; a Dockerfile with no manifest still passes the
+build path; `manifests: ['package.json']` and `manifests: undefined` behave
+exactly as before; a nested manifest is not mistaken for the root one. Three
+builder cases pin the evidence itself — the tree's manifest is listed, its
+lockfile is not, a tree with none yields `[]`, and a truncated listing claims
+nothing at all. Mutation: forcing either `hasRootManifest === false` branch to
+`false` turns the corresponding warn cases red (3 and 1 respectively); deleting
+the builder's `manifests` line turns two of its cases red, and dropping the
+truncation guard turns the third red.
 
 ## R-59 — An added line starting with a double plus was read as a file header
 

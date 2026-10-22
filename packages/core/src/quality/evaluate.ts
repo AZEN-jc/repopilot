@@ -117,6 +117,49 @@ function statusOf(checks: ContractCheck[]): ContractStatus {
   return 'pass';
 }
 
+/**
+ * A check the report cannot answer.
+ *
+ * `warn`, not `pass`. `pass` is a claim about the repository, and this is the
+ * absence of one — the distinction the whole of R-58 is about. The contract's
+ * own vocabulary already carries it: `pass_with_warnings` is documented as
+ * "nothing blocking, but something could not be evaluated", so the honest way
+ * to say "we could not look" is a warning with the reason in `observed`.
+ *
+ * It never blocks, which is also right: a repository with no dependency
+ * manifest is not failing anything by having none. It simply does not answer
+ * the question, and a green tick would say it did.
+ */
+function notEvaluated(
+  section: string,
+  id: string,
+  requirement: string,
+  observed: string,
+  ruleIds: string[]
+): ContractCheck {
+  return { id, section, requirement, observed, status: 'warn', ruleIds };
+}
+
+/**
+ * Whether the rules that read a root `package.json` could have run.
+ *
+ * `true` / `false` come from `report.manifests`, which the builder fills from
+ * the unfiltered tree. `undefined` means nothing is claimed — the report
+ * predates the field, or the tree listing was truncated — and the checks then
+ * answer exactly as they did before it existed. That is the honest option for
+ * a report that carries no claim either way.
+ *
+ * The *root* file specifically. `TEST-002` and `BUILD-002` read
+ * `fileContents.get('package.json')`, so a monorepo whose manifests all sit
+ * under `packages/*` is in the same position as one with none: the question was
+ * not asked, and answering it from a nested manifest would be a new guess in
+ * place of the old one.
+ */
+function rootManifestState(report: Report): boolean | undefined {
+  if (report.manifests === undefined) return undefined;
+  return report.manifests.includes('package.json');
+}
+
 function count(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -173,21 +216,41 @@ function securitySection(findings: Finding[], c: QualityContract): ContractSecti
   return { id: 'security', status: statusOf(checks), checks };
 }
 
-function testingSection(findings: Finding[], c: QualityContract): ContractSection {
+function testingSection(
+  findings: Finding[],
+  c: QualityContract,
+  hasRootManifest: boolean | undefined
+): ContractSection {
   const checks: ContractCheck[] = [];
 
   if (c.testing.required) {
     const missing = byRule(findings, 'TEST-002');
-    checks.push(
-      check(
-        'testing',
-        'testing.test-script',
-        'a test command is declared',
-        missing.length === 0 ? 'declared' : 'not declared',
-        missing.length === 0,
-        ['TEST-002']
-      )
-    );
+    if (hasRootManifest === false) {
+      // TEST-002 only fires when a root `package.json` exists, so its absence
+      // used to mean "pass" for a repository that has none — a Go, Rust or
+      // documentation repo answered "a test command is declared" without
+      // anything having been read (R-58).
+      checks.push(
+        notEvaluated(
+          'testing',
+          'testing.test-script',
+          'a test command is declared',
+          'not evaluated: the repository has no root package.json, which is the only file this rule reads',
+          ['TEST-002']
+        )
+      );
+    } else {
+      checks.push(
+        check(
+          'testing',
+          'testing.test-script',
+          'a test command is declared',
+          missing.length === 0 ? 'declared' : 'not declared',
+          missing.length === 0,
+          ['TEST-002']
+        )
+      );
+    }
   }
 
   if (c.testing.contractTestsRequired) {
@@ -277,25 +340,49 @@ function repositorySection(findings: Finding[], c: QualityContract): ContractSec
   return { id: 'repository', status: statusOf(checks), checks };
 }
 
-function releaseSection(findings: Finding[], c: QualityContract): ContractSection {
+function releaseSection(
+  findings: Finding[],
+  c: QualityContract,
+  hasRootManifest: boolean | undefined
+): ContractSection {
   const checks: ContractCheck[] = [];
 
   if (c.release.build) {
     const noDocker = byRule(findings, 'BUILD-001');
     const noRunScript = byRule(findings, 'BUILD-002');
-    // Either path counts. A project that ships a Dockerfile and no
-    // `start` script is fine, and so is the reverse.
-    const ok = noDocker.length === 0 || noRunScript.length === 0;
-    checks.push(
-      check(
-        'release',
-        'release.build-path',
-        'a production build path exists (Dockerfile or a start script)',
-        ok ? 'present' : 'neither a Dockerfile nor a start script',
-        ok,
-        ['BUILD-001', 'BUILD-002']
-      )
-    );
+    const hasDockerfile = noDocker.length === 0;
+    if (!hasDockerfile && hasRootManifest === false) {
+      // Both halves are unanswerable: BUILD-001 fires on a missing Dockerfile
+      // (so its silence would be the answer, and here it is not silent), and
+      // BUILD-002 only fires when a root `package.json` exists. The old `ok`
+      // read `noDocker.length === 0 || noRunScript.length === 0`, which is
+      // `false || false` here — a fail for a documentation repo with nothing
+      // to build, and a pass in the sibling case where the missing half was
+      // simply not checked (R-58).
+      checks.push(
+        notEvaluated(
+          'release',
+          'release.build-path',
+          'a production build path exists (Dockerfile or a start script)',
+          'not evaluated: no Dockerfile, and no root package.json for a start script to be declared in',
+          ['BUILD-001', 'BUILD-002']
+        )
+      );
+    } else {
+      // Either path counts. A project that ships a Dockerfile and no
+      // `start` script is fine, and so is the reverse.
+      const ok = hasDockerfile || noRunScript.length === 0;
+      checks.push(
+        check(
+          'release',
+          'release.build-path',
+          'a production build path exists (Dockerfile or a start script)',
+          ok ? 'present' : 'neither a Dockerfile nor a start script',
+          ok,
+          ['BUILD-001', 'BUILD-002']
+        )
+      );
+    }
   }
 
   return { id: 'release', status: statusOf(checks), checks };
@@ -340,13 +427,14 @@ export function evaluateQualityContract(
   contract: QualityContract = DEFAULT_QUALITY_CONTRACT
 ): QualityContractResult {
   const findings = collectFindings(report);
+  const hasRootManifest = rootManifestState(report);
 
   const sections: ContractSection[] = [
     securitySection(findings, contract),
-    testingSection(findings, contract),
+    testingSection(findings, contract, hasRootManifest),
     ciSection(findings, contract),
     repositorySection(findings, contract),
-    releaseSection(findings, contract),
+    releaseSection(findings, contract, hasRootManifest),
     coverageSection(report),
   ];
 

@@ -161,6 +161,46 @@ export function isProseDocument(path: string): boolean {
 }
 
 /**
+ * Dependency manifests, by lowercased basename.
+ *
+ * The set answers "does this repository declare dependencies at all?", which is
+ * a different question from "what is it built with". `detectedStack` answers
+ * the second one and looks like it could answer the first; it cannot, because
+ * a label is a guess about content and this is a fact about the tree.
+ *
+ * The list is what the report records in `manifests`, and the quality contract
+ * reads it to decide whether two of its checks are answerable at all (R-58).
+ * Lockfiles are deliberately absent: they accompany a manifest and do not
+ * replace one, and a repository that commits only `pnpm-lock.yaml` has no
+ * declared dependencies to read.
+ */
+export const MANIFEST_BASENAMES: ReadonlySet<string> = new Set([
+  'package.json',
+  'pyproject.toml',
+  'setup.py',
+  'setup.cfg',
+  'pipfile',
+  'requirements.txt',
+  'cargo.toml',
+  'go.mod',
+  'gemfile',
+  'composer.json',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'mix.exs',
+  'pubspec.yaml',
+  'package.swift',
+  'deno.json',
+  'deno.jsonc',
+]);
+
+/** True when the path names a dependency manifest. */
+export function isManifestPath(path: string): boolean {
+  return MANIFEST_BASENAMES.has(path.slice(path.lastIndexOf('/') + 1).toLowerCase());
+}
+
+/**
  * The directory part of a repo-relative path, or `''` at the root.
  *
  * Two copies of this existed, in `entrypoints.ts` and `modules.ts`, byte for

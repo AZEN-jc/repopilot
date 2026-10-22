@@ -31,6 +31,7 @@ import type {
 import type { FileEntry } from '../git/files.js';
 import { templateLaunchCopy, templateSummary } from './templates.js';
 import { REPORT_VERSION } from '../utils/constants.js';
+import { isManifestPath } from '../utils/paths.js';
 import { omittedSections, tierLimitations } from './tiers.js';
 
 export interface ReportBuilderInput {
@@ -292,6 +293,19 @@ export class ReportBuilder {
       },
       summary: '',
       detectedStack: labels,
+      // Recorded because two contract checks cannot be answered without it:
+      // their rules only fire when a root `package.json` exists, so "no
+      // finding" meant "pass" for a repository that has none (R-58). Read off
+      // `allPaths`, the unfiltered tree, for the same reason the existence
+      // checks above use it — `entries` has already dropped what `filterFiles`
+      // considered unreadable, and a manifest is exactly the kind of small
+      // JSON file that survives that filter but need not.
+      //
+      // Omitted, not `[]`, when the listing was truncated: `[]` claims the
+      // tree holds none, and a capped listing cannot support that claim. The
+      // contract then answers as it did before this field existed, which is
+      // the honest option — see the field's docstring.
+      manifests: input.truncated ? undefined : allPaths.filter(isManifestPath).sort(),
       scores,
       blockers,
       documentationGaps,
