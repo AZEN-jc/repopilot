@@ -21,6 +21,7 @@
  * not read instead of letting the absence pass for a fact.
  */
 import type { ExternalDependency } from '../../schemas/intelligence/repository-map.js';
+import { isRecord } from '../../utils/guards.js';
 
 /** Per-manifest cap on reported problems, so one odd file cannot flood the limitations. */
 const MAX_NOTES_PER_MANIFEST = 5;
@@ -597,8 +598,4 @@ function splitInlineArray(body: string): string[] {
   return out
     .map((s) => s.trim())
     .filter((s) => s !== '' && s !== '\n');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

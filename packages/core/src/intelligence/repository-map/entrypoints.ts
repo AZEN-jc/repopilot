@@ -38,6 +38,8 @@ import type { Entrypoint } from '../../schemas/intelligence/repository-map.js';
 import { compareStrings } from '../order.js';
 import { toEvidenceV2 } from '../../schemas/intelligence/evidence-v2.js';
 import type { FileEntry } from '../../git/files.js';
+import { dirnameOf } from '../../utils/paths.js';
+import { isRecord } from '../../utils/guards.js';
 
 /** Enough to describe a repository; past this the list stops being a shortcut. */
 export const MAX_ENTRYPOINTS = 50;
@@ -380,16 +382,7 @@ function lineMatching(content: string, re: RegExp): number | null {
   return null;
 }
 
-function dirnameOf(path: string): string {
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? '' : path.slice(0, cut);
-}
-
 export function isTestPath(path: string): boolean {
   return /(^|\/)(__tests__|tests?|e2e)\//.test(path) || /\.t\.sol$/.test(path);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 

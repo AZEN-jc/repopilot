@@ -3315,6 +3315,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **`VERSION`, a second name for `CORE_VERSION` that nothing imported.**
+  `export const VERSION = '0.1.0'` sat at the end of the core entrypoint beside
+  `CORE_VERSION = '0.1.0'` in `utils/constants.ts`. `/health` and the OpenAPI
+  `info.version` both read `CORE_VERSION`, so the second constant was a copy of
+  one fact — the shape that drifts, and R-27's second instance was exactly that
+  (a test carrying its own copy of a rule, which outlived the fix to the rule).
+- **`hasHackathonKeywords()`.** Exported, listed in
+  `docs/REPOSITORY_INTELLIGENCE_PLAN.md`'s analyzer table, and called by
+  nothing: `analyzeHackathon` asks the same question inline, over the contents
+  it already holds. The table now names `analyzeHackathon()` alone.
+- **Two copies each of `dirnameOf` and `isRecord`.** `dirnameOf` was byte for
+  byte the same function in `repository-map/entrypoints.ts` and
+  `repository-map/modules.ts`; `isRecord` was the same in `entrypoints.ts` and
+  `manifests.ts`. The path helper moved to `utils/paths.ts` beside the other
+  predicates more than one part of the tree asks for, and the guard to a new
+  `utils/guards.ts`. Neither had a test of its own — both were reached only
+  through the callers that now import one definition.
+
 - **Dead code, found by an over-engineering audit and removed in four
   passes — 48 files, +291 / −621, for a net of −330.** Three of those
   files are new and 141 of those added lines are in them, every one an

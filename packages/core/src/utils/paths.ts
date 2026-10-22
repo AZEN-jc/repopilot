@@ -159,3 +159,20 @@ export function isProseDocument(path: string): boolean {
   if (dot <= 0) return PROSE_BASENAMES.has(base.toLowerCase());
   return PROSE_EXTENSIONS.has(base.slice(dot).toLowerCase());
 }
+
+/**
+ * The directory part of a repo-relative path, or `''` at the root.
+ *
+ * Two copies of this existed, in `entrypoints.ts` and `modules.ts`, byte for
+ * byte — the same four lines that would have had to be changed in two places
+ * the first time a path grew a trailing slash. It is here for the reason this
+ * file's header gives: more than one part of the tree asks the same question,
+ * and the answer has to be the same one.
+ *
+ * No `node:path`: these are repo-relative POSIX paths from the GitHub tree
+ * API, and `dirname()` on a Windows host would answer with backslashes.
+ */
+export function dirnameOf(path: string): string {
+  const cut = path.lastIndexOf('/');
+  return cut === -1 ? '' : path.slice(0, cut);
+}

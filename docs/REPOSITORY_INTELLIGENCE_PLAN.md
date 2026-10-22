@@ -150,7 +150,7 @@ parseRepoUrl(repoUrl, allowedHosts)
 | `analyzers/documentation.ts` | `analyzeDocumentation()` | entries + contents | `doc-*` |
 | `analyzers/reproducibility.ts` | `analyzeReproducibility()` | entries + contents | `repro-*` |
 | `analyzers/web3.ts` | `analyzeWeb3()` | entries + contents | `web3-*` |
-| `analyzers/hackathon.ts` | `analyzeHackathon()`, `hasHackathonKeywords()` | entries + contents + web3 结果 | `hack-*` |
+| `analyzers/hackathon.ts` | `analyzeHackathon()` | entries + contents + web3 结果 | `hack-*` |
 | `security/secret-scanner.ts` | `scanForSecrets()`, `toSecretFindings()` | `{path,content}[]` | 归入 `securityFindings` |
 | `security/injection.ts` | `detectPromptInjection()`, `injectionFindingsToReport()` | `{path,content}[]` | 归入 `securityFindings` |
 | `scoring/score.ts` | `scoreAll()`, `score{Documentation,Reproducibility,SecurityHygiene,DeploymentReadiness}()` | `ScoringInput` | —（产出 `Scores`） |

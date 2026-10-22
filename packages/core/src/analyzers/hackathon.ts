@@ -219,12 +219,3 @@ export function analyzeHackathon(
     networks: [...networks],
   };
 }
-
-export function hasHackathonKeywords(fileContents: Map<string, string>): boolean {
-  for (const content of fileContents.values()) {
-    if (/\b(hackathon|hack[a-z\s-]*project|track:|submission:)\b/i.test(content)) {
-      return true;
-    }
-  }
-  return false;
-}

@@ -26,6 +26,7 @@ import { classifyFile, detectLanguage, type FileEntry } from '../../git/files.js
 import type { Entrypoint, Module } from '../../schemas/intelligence/repository-map.js';
 import { moduleImportance } from './importance.js';
 import { compareStrings } from '../order.js';
+import { dirnameOf } from '../../utils/paths.js';
 import type { ManifestParseResult } from './manifests.js';
 
 /** A top-level directory needs at least this many files to count as a subsystem. */
@@ -303,11 +304,6 @@ function expandWorkspaceGlobs(
   }
 
   return { matched, unexpanded };
-}
-
-function dirnameOf(path: string): string {
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? '' : path.slice(0, cut);
 }
 
 function basenameOf(dir: string): string {
