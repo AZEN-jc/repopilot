@@ -160,38 +160,43 @@ describe('POST /api/v1/audits: 402 challenge → replay → 202 queued', () => {
 });
 
 /**
- * Read the `required` list of the queued-response schema out of
- * `apps/api/src/openapi.ts`.
+ * Read the `required` list of the queued-response schema out of the published
+ * contract, `docs/openapi.json`.
  *
  * This is a deliberate cross-package read: the web tests cannot import
  * `apps/api` (it would drag Fastify, sqlite and the whole server graph into a
- * jsdom run), but the point of the check is to detect drift between the two,
- * so reading the published schema as text is exactly the right amount of
- * coupling. It is the only place in this suite that knows `apps/api` exists.
+ * jsdom run), but the point of the check is to detect drift between the two, so
+ * reading the contract is exactly the right amount of coupling.
+ *
+ * It used to read `apps/api/src/openapi.ts` as text and regex the `required`
+ * array out of it. That worked only because the schema was a hand-written
+ * literal in that file; the schemas are generated now, and the file the client
+ * actually consumes is the document. Reading the document is both simpler and
+ * closer to the thing being promised. `pnpm openapi:check` guarantees it is
+ * current.
  */
 function queuedResponseRequiredFields(): string[] {
   // `import.meta.url` is not a `file:` URL under Vite's transform, so the
-  // schema is located relative to the working directory instead. `pnpm test`
-  // runs from `apps/web`; the second candidate covers a repo-root invocation.
-  const candidates = ['../api/src/openapi.ts', 'apps/api/src/openapi.ts'].map((p) => resolve(process.cwd(), p));
+  // document is located relative to the working directory instead. `pnpm test`
+  // runs from `apps/web` (`../../docs`); the second candidate covers a
+  // repo-root invocation.
+  const candidates = ['../../docs/openapi.json', 'docs/openapi.json'].map((p) => resolve(process.cwd(), p));
   const path = candidates.find((p) => existsSync(p));
   if (!path) {
-    throw new Error(`Could not locate apps/api/src/openapi.ts. Looked in:\n  ${candidates.join('\n  ')}`);
+    throw new Error(`Could not locate docs/openapi.json. Looked in:\n  ${candidates.join('\n  ')}`);
   }
 
-  const source = readFileSync(path, 'utf8');
-  const match = /required:\s*\[([^\]]*'statusUrl'[^\]]*)\]/.exec(source);
-  if (!match) {
+  const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+    components?: { schemas?: Record<string, { required?: string[] }> };
+  };
+  const required = doc.components?.schemas?.['AuditQueuedResponse']?.required;
+  if (!required) {
     throw new Error(
-      'Could not find the queued-response `required` list in apps/api/src/openapi.ts. ' +
-        'The schema was reformatted or the field was renamed — update this helper.'
+      'Could not find `AuditQueuedResponse.required` in docs/openapi.json. ' +
+        'The schema was renamed or regenerated without it — update this helper.'
     );
   }
-  return match[1]!
-    .split(',')
-    .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
-    .filter(Boolean)
-    .sort();
+  return [...required].sort();
 }
 
 /* ---------- 4-6: the polling loop ---------- */

@@ -166,6 +166,15 @@ jobs:
       - name: Documentation facts (docs vs code)
         run: pnpm docs:check
 
+      # The published API contract, rebuilt from the source and compared with
+      # the checked-in copy. The schemas are generated (`openapi-schemas.ts`)
+      # so they cannot drift; the file is committed so it can be read and
+      # diffed without starting the service — and a committed generated file
+      # rots the first time someone edits the source and forgets to rebuild.
+      # This is the step that turns that into a red build.
+      - name: OpenAPI contract (regenerated matches committed)
+        run: pnpm openapi:check
+
       # Static review of the Dockerfile itself: the Node base image against
       # `engines.node`, agreement between the install and build filter lists,
       # and that every file which changes how `pnpm install` resolves

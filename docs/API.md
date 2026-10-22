@@ -757,12 +757,34 @@ payment challenge on the first call, then `202` with `Location` and
 
 ## `GET /docs/openapi.json`
 
-The OpenAPI 3.1 document. Hand-written; served from
-`apps/api/src/openapi.ts`. Used by the web UI for type generation
-and by external clients. Includes `FreeCheckRequest`,
-`FreeCheckReport`, `CreateAuditRequest`,
-`AuditStatusResponse`, `CapabilitiesResponse`, `ErrorResponse`,
-and the `HealthResponse` schemas under `components.schemas`.
+The OpenAPI 3.1 document. Served from `apps/api/src/openapi.ts`, and also
+checked in at [`docs/openapi.json`](./openapi.json) so a client author can read
+it without starting the service.
+
+The document has two halves, built differently:
+
+- **`components.schemas`** is generated from the Zod schemas in
+  `apps/api/src/openapi-schemas.ts`, which reuses the same schemas the routes
+  validate with (`HealthResponse`, `CapabilitiesResponse`,
+  `FreeCheckRequest`, `FreeCheckReport`, `CreateAuditRequest`,
+  `ReauditRequest`, `RootResponse`, `OpenApiDocument`) plus the response
+  envelopes the routes build by hand (`AuditQueuedResponse`,
+  `AuditPendingResponse`, `AuditStatusResponse`, `PaymentChallenge`,
+  `EnqueueFailedResponse`, `ErrorResponse`).
+- **`paths`** is hand-written. Which status codes an operation returns, what a
+  409 means, and which routes cost money are review decisions, not derivable
+  facts.
+
+Three gates keep it honest, all of which run in CI:
+
+- `apps/api/src/openapi.test.ts` — every route the app registers is documented
+  and every documented operation is served; every `$ref` resolves; every
+  component is referenced; every tag is declared; no 3.0-only keywords.
+- `apps/api/src/tests/api.integration.test.ts` — real responses, parsed through
+  the published schemas, so the document cannot describe a body the server does
+  not send.
+- `pnpm openapi:check` — rebuilds the document and byte-compares it with
+  `docs/openapi.json`. Regenerate with `pnpm openapi:build`.
 
 ## Rate limits
 

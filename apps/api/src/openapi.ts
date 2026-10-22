@@ -1,13 +1,89 @@
 /**
  * OpenAPI 3.1 spec for RepoPilot.
  *
- * Hand-written (no codegen). The spec lives next to the routes so adding
- * an endpoint forces an explicit review of its public shape.
+ * Two halves, built differently on purpose.
  *
- * Served at `GET /docs/openapi.json`. The `paths` block is intentionally
- * inline so reviewers can read it without jumping files.
+ * `paths` is hand-written and lives here, next to the routes, so adding an
+ * endpoint forces an explicit review of its public shape — which status codes
+ * it can return, which of them are paid, what a 409 means. None of that is
+ * derivable from a type, and the reviewer should not have to jump files.
+ *
+ * `components.schemas` is generated from the Zod schemas in
+ * `openapi-schemas.ts`. It used to be a hand-copied literal too, and the copy
+ * drifted from the routes in two client-visible ways (see that file's header).
+ * A shape now has one definition and the document is a rendering of it.
+ *
+ * Served at `GET /docs/openapi.json`, and written to `docs/openapi.json` by
+ * `pnpm openapi:build` so the published contract can be read and diffed
+ * without running the service.
  */
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { ZodTypeAny } from 'zod';
 import { CORE_VERSION } from '@repopilot/core';
+import { SPEC_SCHEMAS, type SpecSchemaName } from './openapi-schemas.js';
+
+/**
+ * Convert one Zod schema into the JSON Schema that goes under
+ * `components.schemas`.
+ *
+ * `jsonSchema7` rather than `openApi3`: this document declares 3.1.0, where a
+ * nullable field is `type: [T, 'null']` and `nullable: true` is not a keyword
+ * at all. The hand-written version used `nullable: true` throughout — 3.0
+ * syntax in a 3.1 document, which a strict validator rejects and a lenient one
+ * silently reads as "required".
+ *
+ * `$refStrategy: 'none'` inlines everything, so each component is
+ * self-contained and a client can resolve it without the rest of the document.
+ * The `$schema` key zod-to-json-schema adds is dropped: inside a 3.1 document
+ * it would announce draft-07 for one subschema.
+ *
+ * `additionalProperties: false` is dropped, and that is a decision rather than
+ * tidying. The converter writes it for every `z.object()`, but Zod's default
+ * object *strips* unknown keys — it does not reject them — so the document
+ * would be closing a shape the server does not close. Worse, generated clients
+ * read it as "unknown fields are an error", which turns the next additive
+ * response field into a breaking change for them. `additionalProperties` set
+ * to a schema (a `z.record`) is kept: that one carries real information.
+ */
+function toJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
+  const converted = zodToJsonSchema(schema, {
+    target: 'jsonSchema7',
+    $refStrategy: 'none',
+  }) as Record<string, unknown>;
+  stripStrictness(converted);
+  delete converted['$schema'];
+  return converted;
+}
+
+/** Remove every `additionalProperties: false`, at any depth. */
+function stripStrictness(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) stripStrictness(item);
+    return;
+  }
+  if (typeof node !== 'object' || node === null) return;
+  const obj = node as Record<string, unknown>;
+  if (obj['additionalProperties'] === false) delete obj['additionalProperties'];
+  for (const value of Object.values(obj)) stripStrictness(value);
+}
+
+function buildSchemas(): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, schema] of Object.entries(SPEC_SCHEMAS)) {
+    out[name] = toJsonSchema(schema as ZodTypeAny);
+  }
+  return out;
+}
+
+/** A component reference, by name, checked at the type level. */
+function ref(name: SpecSchemaName): { $ref: string } {
+  return { $ref: `#/components/schemas/${name}` };
+}
+
+/** `application/json` body carrying `name`. */
+function jsonBody(name: SpecSchemaName): Record<string, unknown> {
+  return { 'application/json': { schema: ref(name) } };
+}
 
 export function buildOpenApiSpec(): Record<string, unknown> {
   return {
@@ -31,8 +107,30 @@ export function buildOpenApiSpec(): Record<string, unknown> {
       { name: 'capabilities', description: 'Public service capabilities' },
       { name: 'free-check', description: 'No-payment entry point' },
       { name: 'audits', description: 'Paid audits' },
+      // Declared because six operations use it. It was used and undeclared
+      // for as long as the derived views have existed; `openapi.test.ts`
+      // now fails on a tag no `tags` entry introduces.
+      {
+        name: 'derived',
+        description:
+          'Free read-only views over audits that already happened. No payment, and no repository is scanned.',
+      },
     ],
     paths: {
+      '/': {
+        get: {
+          tags: ['meta'],
+          summary: 'Service discovery',
+          description: 'Name, version, and the paths a client is likely to want next.',
+          operationId: 'getRoot',
+          responses: {
+            '200': {
+              description: 'The service identity and its entry points',
+              content: jsonBody('RootResponse'),
+            },
+          },
+        },
+      },
       '/health': {
         get: {
           tags: ['meta'],
@@ -41,11 +139,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           responses: {
             '200': {
               description: 'Process is up',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/HealthResponse' },
-                },
-              },
+              content: jsonBody('HealthResponse'),
             },
           },
         },
@@ -58,11 +152,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           responses: {
             '200': {
               description: 'Service capabilities',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/CapabilitiesResponse' },
-                },
-              },
+              content: jsonBody('CapabilitiesResponse'),
             },
           },
         },
@@ -78,60 +168,32 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           operationId: 'freeCheck',
           requestBody: {
             required: true,
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/FreeCheckRequest' },
-              },
-            },
+            content: jsonBody('FreeCheckRequest'),
           },
           responses: {
             '200': {
               description: 'Free check report',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FreeCheckReport' },
-                },
-              },
+              content: jsonBody('FreeCheckReport'),
             },
             '400': {
               description: 'Invalid input',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '403': {
               description: 'Host not in the allowlist (SSRF defence)',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '404': {
               description: 'Repository not found or not accessible',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '429': {
               description: 'Rate-limited (per-IP) or upstream GitHub limit',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '502': {
               description: 'Upstream failure (GitHub unreachable, etc.)',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
           },
         },
@@ -167,11 +229,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           ],
           requestBody: {
             required: true,
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/CreateAuditRequest' },
-              },
-            },
+            content: jsonBody('CreateAuditRequest'),
           },
           responses: {
             '202': {
@@ -186,43 +244,23 @@ export function buildOpenApiSpec(): Record<string, unknown> {
                   schema: { type: 'integer', minimum: 1 },
                 },
               },
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/AuditQueuedResponse' },
-                },
-              },
+              content: jsonBody('AuditQueuedResponse'),
             },
             '400': {
               description: 'Invalid input',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '402': {
               description: 'Payment required / not yet settled',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/PaymentChallenge' },
-                },
-              },
+              content: jsonBody('PaymentChallenge'),
             },
             '429': {
               description: 'Rate-limited',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '503': {
               description: 'Queue unavailable; please retry',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('EnqueueFailedResponse'),
             },
           },
         },
@@ -243,11 +281,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           responses: {
             '200': {
               description: 'Job status: completed (with report) or failed (with structured error).',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/AuditStatusResponse' },
-                },
-              },
+              content: jsonBody('AuditStatusResponse'),
             },
             '202': {
               description: 'Job is queued or processing. Retry with Retry-After header.',
@@ -257,19 +291,11 @@ export function buildOpenApiSpec(): Record<string, unknown> {
                   schema: { type: 'integer', minimum: 1 },
                 },
               },
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/AuditStatusResponse' },
-                },
-              },
+              content: jsonBody('AuditPendingResponse'),
             },
             '404': {
               description: 'Unknown job',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
           },
         },
@@ -300,19 +326,11 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             },
             '404': {
               description: 'Unknown job',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '409': {
               description: 'The job has not completed yet, so there is no report to derive from.',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
           },
         },
@@ -350,19 +368,11 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             },
             '400': {
               description: 'Missing base, self-comparison, or the two audits belong to different repositories.',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '404': {
               description: 'Unknown head or base job',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
           },
         },
@@ -393,19 +403,11 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             },
             '404': {
               description: 'Unknown job',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '409': {
               description: 'The job has not completed yet, so there is no report to evaluate.',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
           },
         },
@@ -435,18 +437,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             required: false,
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    mode: { type: 'string', enum: ['quick', 'full'] },
-                    target: {
-                      type: 'string',
-                      enum: ['hackathon', 'open_source', 'production'],
-                    },
-                    outputLanguage: { type: 'string', enum: ['en', 'zh-CN'] },
-                    includeLaunchCopy: { type: 'boolean' },
-                  },
-                },
+                schema: ref('ReauditRequest'),
               },
             },
           },
@@ -456,11 +447,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             },
             '400': {
               description: 'Invalid owner/repo segment or request body.',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
+              content: jsonBody('ErrorResponse'),
             },
             '402': {
               description: 'Payment required. Replay with X-PAYMENT.',
@@ -507,241 +494,27 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           },
         },
       },
-    },
-    components: {
-      schemas: {
-        HealthResponse: {
-          type: 'object',
-          required: ['status', 'version', 'paymentMode', 'database', 'queue'],
-          properties: {
-            status: { type: 'string', enum: ['ok', 'degraded'] },
-            version: { type: 'string' },
-            paymentMode: { type: 'string', enum: ['mock', 'okx'] },
-            database: { type: 'string', enum: ['ok', 'degraded'] },
-            queue: {
-              type: 'object',
-              required: ['driver', 'status', 'acceptingJobs'],
-              properties: {
-                driver: { type: 'string', enum: ['inline', 'pg-boss'] },
-                status: { type: 'string', enum: ['ok', 'degraded', 'unavailable'] },
-                acceptingJobs: { type: 'boolean' },
-                pending: { type: 'integer', minimum: 0 },
-                active: { type: 'integer', minimum: 0 },
-              },
-            },
-          },
-        },
-        CapabilitiesResponse: {
-          type: 'object',
-          required: [
-            'name',
-            'version',
-            'inputs',
-            'outputs',
-            'limits',
-            'pricing',
-            'paymentMode',
-            'endpoints',
-          ],
-          properties: {
-            name: { type: 'string', enum: ['RepoPilot'] },
-            version: { type: 'string' },
-            inputs: { type: 'object', additionalProperties: { type: 'string' } },
-            outputs: { type: 'object', additionalProperties: { type: 'string' } },
-            limits: { type: 'object', additionalProperties: true },
-            pricing: { type: 'object', additionalProperties: true },
-            paymentMode: { type: 'string', enum: ['mock', 'okx'] },
-            endpoints: {
-              type: 'object',
-              required: ['freeCheck', 'audits'],
-              properties: {
-                freeCheck: {
-                  type: 'object',
-                  required: ['path', 'method', 'auth', 'input', 'output'],
-                  properties: {
-                    path: { type: 'string' },
-                    method: { type: 'string', enum: ['POST'] },
-                    auth: { type: 'string', enum: ['none'] },
-                    input: { type: 'string' },
-                    output: { type: 'string' },
-                    rateLimited: { type: 'boolean' },
-                    pricingUsdt: { type: 'string' },
-                  },
-                },
-                audits: {
-                  type: 'object',
-                  required: ['path', 'method', 'auth', 'input', 'output'],
-                  properties: {
-                    path: { type: 'string' },
-                    method: { type: 'string', enum: ['POST'] },
-                    auth: { type: 'string', enum: ['x402'] },
-                    input: { type: 'string' },
-                    output: { type: 'string' },
-                    rateLimited: { type: 'boolean' },
-                    pricingUsdt: { type: 'string' },
-                  },
-                },
-              },
-            },
-          },
-        },
-        FreeCheckRequest: {
-          type: 'object',
-          required: ['repoUrl'],
-          properties: {
-            repoUrl: {
-              type: 'string',
-              format: 'uri',
-              description: 'https URL to a public GitHub repository',
-            },
-            outputLanguage: { type: 'string', enum: ['en', 'zh-CN'], default: 'en' },
-          },
-        },
-        FreeCheckReport: {
-          type: 'object',
-          required: [
-            'reportVersion',
-            'kind',
-            'repository',
-            'metadata',
-            'stack',
-            'checks',
-            'score',
-            'generatedAt',
-          ],
-          properties: {
-            reportVersion: { type: 'string', enum: ['1.0'] },
-            kind: { type: 'string', enum: ['free-check'] },
-            repository: {
-              type: 'object',
-              required: ['url', 'host', 'owner', 'name', 'valid'],
-              properties: {
-                url: { type: 'string' },
-                host: { type: 'string' },
-                owner: { type: 'string' },
-                name: { type: 'string' },
-                valid: { type: 'boolean' },
-              },
-            },
-            metadata: {
-              type: 'object',
-              nullable: true,
-              properties: {
-                description: { type: 'string', nullable: true },
-                defaultBranch: { type: 'string', nullable: true },
-                stars: { type: 'integer', nullable: true, minimum: 0 },
-                language: { type: 'string', nullable: true },
-                topics: { type: 'array', items: { type: 'string' } },
-              },
-            },
-            stack: {
-              type: 'object',
-              nullable: true,
-              properties: {
-                languages: { type: 'array', items: { type: 'string' } },
-                frameworks: { type: 'array', items: { type: 'string' } },
-                runtimes: { type: 'array', items: { type: 'string' } },
-              },
-            },
-            checks: {
-              type: 'array',
-              items: {
-                type: 'object',
-                required: ['id', 'title', 'passed', 'evidence'],
-                properties: {
-                  id: { type: 'string' },
-                  title: { type: 'string' },
-                  passed: { type: 'boolean' },
-                  evidence: { type: 'string', nullable: true },
-                },
-              },
-            },
-            score: {
-              type: 'object',
-              required: ['value', 'passed', 'total'],
-              properties: {
-                value: { type: 'integer', minimum: 0, maximum: 100 },
-                passed: { type: 'integer', minimum: 0 },
-                total: { type: 'integer', minimum: 1 },
-              },
-            },
-            generatedAt: { type: 'string', format: 'date-time' },
-          },
-        },
-        CreateAuditRequest: {
-          type: 'object',
-          required: ['repoUrl'],
-          properties: {
-            repoUrl: { type: 'string', format: 'uri' },
-            mode: { type: 'string', enum: ['quick', 'full'], default: 'quick' },
-            target: {
-              type: 'string',
-              enum: ['hackathon', 'open_source', 'production'],
-              default: 'open_source',
-            },
-            outputLanguage: { type: 'string', enum: ['en', 'zh-CN'], default: 'en' },
-            includeLaunchCopy: { type: 'boolean', default: true },
-          },
-        },
-        AuditQueuedResponse: {
-          type: 'object',
-          required: ['jobId', 'status', 'statusUrl', 'pollAfterMs'],
-          properties: {
-            jobId: { type: 'string' },
-            status: { type: 'string', enum: ['queued', 'processing'] },
-            statusUrl: { type: 'string', description: 'Path to GET for polling.' },
-            pollAfterMs: { type: 'integer', minimum: 0 },
-          },
-        },
-        AuditStatusResponse: {
-          type: 'object',
-          required: ['jobId', 'status'],
-          properties: {
-            jobId: { type: 'string' },
-            status: {
-              type: 'string',
-              enum: ['queued', 'processing', 'completed', 'failed'],
-            },
-            report: { type: 'object', nullable: true },
-            error: { type: 'object', nullable: true },
-            cache: {
-              type: 'object',
-              required: ['hit', 'keyVersion', 'expiresAt'],
-              properties: {
-                hit: { type: 'boolean' },
-                keyVersion: { type: 'string' },
-                expiresAt: { type: 'string', format: 'date-time', nullable: true },
-              },
-            },
-          },
-        },
-        PaymentChallenge: {
-          type: 'object',
-          required: ['jobId', 'payment'],
-          properties: {
-            jobId: { type: 'string' },
-            status: { type: 'string', enum: ['queued', 'processing'] },
-            payment: { type: 'object' },
-            error: { type: 'object' },
-            paymentId: { type: 'string' },
-          },
-        },
-        ErrorResponse: {
-          type: 'object',
-          required: ['error'],
-          properties: {
-            error: {
-              type: 'object',
-              required: ['code', 'message'],
-              properties: {
-                code: { type: 'string' },
-                message: { type: 'string' },
-                details: {},
-              },
+      '/docs/openapi.json': {
+        get: {
+          tags: ['meta'],
+          summary: 'This document',
+          description:
+            'The OpenAPI 3.1 contract for everything above. Also checked in at `docs/openapi.json`, ' +
+            'regenerated from the source by `pnpm openapi:build`.',
+          operationId: 'getOpenApiDocument',
+          responses: {
+            '200': {
+              description: 'The OpenAPI document',
+              content: jsonBody('OpenApiDocument'),
             },
           },
         },
       },
+    },
+    components: {
+      // Generated from `openapi-schemas.ts`. Nothing below is written by
+      // hand, and `openapi.test.ts` proves every entry is referenced.
+      schemas: buildSchemas(),
     },
   };
 }

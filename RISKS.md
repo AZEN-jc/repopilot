@@ -138,13 +138,14 @@ Active risks the team is aware of and how they are mitigated.
 - [R-77](#r-77--a-queued-job-has-no-deadline-and-only-a-re-enqueue-can-move-it)
   — Accepted residual: the sweep needs a threshold the row cannot justify
 - [R-78](#r-78--the-mcp-servers-http-transport-is-unauthenticated-by-design)
+- [R-79](#r-79--the-published-contract-was-a-second-copy-and-nothing-read-it)
   — Mitigated by default: loopback, and mock payment is refused off it
 
 ---
 
 ## How to read this file
 
-<!-- docs-facts:risk-count -->77<!-- docs-facts:end --> entries (`R-41` is unused;
+<!-- docs-facts:risk-count -->78<!-- docs-facts:end --> entries (`R-41` is unused;
 the numbering jumps). The count is generated — `scripts/docs-facts.ts` renders it
 from the `## R-` headings — because it was written as an English numeral and
 hand-bumped on every addition, which is the one number a reader cannot check at a
@@ -4085,3 +4086,71 @@ log, not this process's.
 
 **Related.** D-045 (the decision), R-02 (the same failure mode on the API),
 D-019 (why the free tools are free).
+
+---
+
+## R-79 — The published contract was a second copy, and nothing read it
+
+**Severity:** High while it lasted — the document external clients code against
+described bodies the server never sends.
+**Likelihood:** Certain, in the sense that it had already happened twice.
+**Status:** Fixed 2026-10-22 — one copy instead of two, and a gate on the one
+that remains.
+
+**What happened.** `apps/api/src/openapi.ts` carried `components.schemas` as a
+hand-written JSON literal beside the routes. Nothing tested it — there was no
+test that read the document at all — so the copy drifted, twice, in ways a
+client would act on:
+
+- `CapabilitiesResponse.endpoints` declared `{auth, input, output, rateLimited,
+  pricingUsdt}` for each endpoint. The route has emitted
+  `{method, path, description, requiresPayment}` from the day it was written,
+  and it also emits a `cache` block the document did not mention. Four of the
+  five fields a generated client would look for do not exist, and one field the
+  server always sends was invisible.
+- `CreateAuditRequest.mode` declared `default: 'quick'`. R-37 changed the
+  default to `full` in `CreateAuditInputSchema` on 2026-10-05 — the one-price
+  decision, where a caller who omitted the field had to get the report the
+  service description promised — and the change did not reach the document. The
+  contract described the field backwards to exactly the buyer who relied on it.
+
+The document also declared `openapi: '3.1.0'` and used `nullable: true`
+throughout, which is 3.0 syntax: a strict validator rejects it, and a lenient one
+reads the keyword as unknown and leaves the field required and non-null. And six
+operations carried a `derived` tag that the document's `tags` array never
+introduced.
+
+**Why nothing caught it.** `paths` being hand-written is a decision (D-046), and
+it is a good one — which is why the defect sat in the half that had no reason to
+be. `components.schemas` was a *copy* of structures that already existed in Zod,
+and a copy has no link to its original. The routes validated with
+`FreeCheckInputSchema` and parsed responses through `CapabilitiesSchema`; the
+document restated both by hand. That is the same defect class the 2026-10-01
+review found fourteen of in prose, in a file that happens to be JSON.
+
+**What the fix is.** The schemas are generated (`apps/api/src/openapi-schemas.ts`
+→ `buildOpenApiSpec()`), so there is one definition and the document is a
+rendering of it. `paths` stays hand-written. Four gates:
+
+- `apps/api/src/openapi.test.ts` — every route the app registers is documented
+  and every documented operation is served (collected through Fastify's
+  `onRoute` hook, so a route written in any style is visible); every `$ref`
+  resolves; every component is referenced; every tag is declared; no 3.0-only
+  keyword survives; no response object is closed.
+- `apps/api/src/tests/api.integration.test.ts` — real 402 / 202 / 200 bodies,
+  parsed through the published schemas, so the document cannot describe a body
+  the server does not send.
+- `pnpm openapi:check` — rebuilds the document and byte-compares it with the
+  committed `docs/openapi.json`; runs in CI beside `docs:check`.
+- `docs/API.md` describes how the two halves are built and what the gates check.
+
+**Verification.** Five mutations, each caught: a path removed from `paths`
+(coverage + unused-component tests red), an `additionalProperties: false`
+reintroduced, `nullable: true` reintroduced, a component nothing references
+added, and a tag renamed in `tags` only. The two client-visible defects are
+now impossible rather than fixed: the capabilities block and the `mode` default
+are read from the schema that emits them.
+
+**Related.** D-046 (the decision and the rejected alternatives), R-31 (the
+exemption list that would have been needed without `routes/meta.ts`), R-37 (the
+`mode` default), D-031 (the same fix for prose facts).

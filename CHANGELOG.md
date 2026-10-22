@@ -16,6 +16,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A generated, gate-checked OpenAPI document, published as
+  `docs/openapi.json`.** `components.schemas` was a hand-written JSON literal
+  beside the routes, and nothing tested it — so it drifted twice in ways a
+  client would act on: `CapabilitiesResponse.endpoints` described four fields
+  the route has never emitted (and omitted the `cache` block it always sends),
+  and `CreateAuditRequest.mode` declared `default: 'quick'`, which R-37
+  changed to `full` in the code on 2026-10-05. The schemas are now generated
+  from Zod (`apps/api/src/openapi-schemas.ts`, reusing the ones the routes
+  validate with, plus the response envelopes the routes build by hand), so a
+  shape has one definition and the document is a rendering of it. `paths` stays
+  hand-written: which status codes an operation returns and what a 409 means is
+  a review decision, not a derivable fact. `pnpm openapi:build` writes the file,
+  `pnpm openapi:check` byte-compares it with the committed copy and runs in CI.
+  Also fixed in the same pass: the document declared 3.1.0 and used
+  `nullable: true` throughout (3.0 syntax, which a strict validator rejects),
+  six operations carried a `derived` tag the document never introduced, and
+  `AuditStatusResponse` described neither `createdAt` / `completedAt` /
+  `failedAt` nor the three distinct bodies `GET /api/v1/audits/:jobId` returns.
+  D-046, R-79.
+- **`apps/api/src/openapi.test.ts` — the contract, checked against the code.**
+  Every route the app registers is documented and every documented operation is
+  served, collected through Fastify's `onRoute` hook rather than by scanning for
+  `app.get(`; every `$ref` resolves; every component is referenced by some
+  operation; every tag is declared; no 3.0-only keyword survives; no response
+  object is closed with `additionalProperties: false`. The hook is also why
+  `/` and `/docs/openapi.json` moved out of `server.ts` into `routes/meta.ts`:
+  written straight onto the instance they were invisible to the comparison, and
+  the gate would have needed an exemption list — which is a list nobody
+  re-reads. Five mutations, one case red each.
+
 - **Streamable HTTP transport for the MCP server.** `REPOPILOT_MCP_TRANSPORT=http`
   serves the same fourteen tools on `POST`/`GET`/`DELETE /mcp` plus `/health`,
   for hosts that cannot spawn a child process. The default stays stdio, so an
@@ -1796,6 +1826,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The published contract described bodies the server never sends, and no test
+  read it.** `components.schemas` was a hand-written copy of shapes that already
+  existed in Zod, with nothing comparing the two, so it drifted twice:
+  `CapabilitiesResponse.endpoints` named `auth` / `input` / `output` /
+  `rateLimited` / `pricingUsdt` where the route emits `method` / `path` /
+  `description` / `requiresPayment`, and it left out the `cache` block the route
+  always returns; `CreateAuditRequest.mode` declared `default: 'quick'` a
+  fortnight after R-37 changed the default to `full`. The document also declared
+  `openapi: 3.1.0` and used `nullable: true` throughout, which is 3.0 syntax —
+  a strict validator rejects it, and a lenient one reads the field as required
+  and non-null. Fixed by generating the schemas from their Zod originals, and by
+  making the truth assertable rather than assumed:
+  `api.integration.test.ts` parses real 402 / 202 / 200 bodies through the
+  published schemas, so a schema can no longer describe a shape nothing emits.
+  R-79.
 - **`docs/API.md` described a `/health` response that stopped existing.** Four
   fields and a note saying `status` is "always `ok` when the process is up" and
   `database` "always `ok` in this build" — three claims, none of them true since

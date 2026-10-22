@@ -9,7 +9,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   AuditPipeline,
-  CORE_VERSION,
   FreeCheckRunner,
   MetadataAnalyzer,
 } from '@repopilot/core';
@@ -31,7 +30,7 @@ import { registerCapabilitiesRoutes } from './routes/capabilities.js';
 import { registerAuditRoutes } from './routes/audits.js';
 import { registerFreeCheckRoutes } from './routes/free-check.js';
 import { registerAuditDerivedRoutes } from './routes/audit-derived.js';
-import { buildOpenApiSpec } from './openapi.js';
+import { registerMetaRoutes } from './routes/meta.js';
 
 export interface AppDeps {
   payment: PaymentConfig;
@@ -318,19 +317,9 @@ export async function buildApp(
     });
   });
 
-  app.get('/', async () => ({
-    name: 'RepoPilot',
-    version: CORE_VERSION,
-    endpoints: [
-      '/health',
-      '/api/v1/capabilities',
-      '/api/v1/free-check',
-      '/api/v1/audits',
-      '/docs/openapi.json',
-    ],
-  }));
-
-  app.get('/docs/openapi.json', async () => buildOpenApiSpec());
+  // `/` and `/docs/openapi.json`. A registrar like the rest, so the
+  // contract-coverage test can see them — see `routes/meta.ts`.
+  registerMetaRoutes(app);
 
   // Wire graceful shutdown.
   const shutdown = async (sopts?: { graceMs?: number }): Promise<void> => {

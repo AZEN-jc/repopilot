@@ -24,7 +24,17 @@ const QueueSchema = z.object({
   active: z.number().int().nonnegative().optional(),
 });
 
-const ResponseSchema = z.object({
+/**
+ * Exported for the published contract, not for the route.
+ *
+ * `openapi-schemas.ts` builds `components.schemas.HealthResponse` from this
+ * object, so the document cannot describe a `/health` body the route does not
+ * produce. The name stays `ResponseSchema` rather than becoming
+ * `HealthResponseSchema`: `scripts/docs-facts.ts` looks this identifier up by
+ * name when it renders the field table in `docs/API.md`, and a rename would
+ * turn that gate into "no such z.object" instead of a table.
+ */
+export const ResponseSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   version: z.string(),
   paymentMode: z.enum(['mock', 'okx']),

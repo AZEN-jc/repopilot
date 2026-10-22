@@ -81,6 +81,7 @@ Architecture Decision Records (ADR-style, lightweight).
 - [D-044](#d-044--a-wait-that-cannot-say-which-way-it-failed-is-not-a-diagnostic)
   — A wait that cannot say which way it failed is not a diagnostic
 - [D-045](#d-045--a-transport-that-adds-a-socket-adds-a-payment-decision)
+- [D-046](#d-046--generate-the-shapes-hand-write-the-sentences)
   — A transport that adds a socket adds a payment decision
 
 ---
@@ -2622,3 +2623,83 @@ it.
   was a rewrite.
 
 **Related.** `BACKLOG.md` (the item, closed 2026-10-22), R-02, R-78, D-003.
+
+---
+
+## D-046 — Generate the shapes, hand-write the sentences
+
+`BACKLOG.md` asked for an "OpenAPI generator script". `apps/api/src/openapi.ts`
+opened with the opposite instruction, recorded on purpose: "Hand-written (no
+codegen). The spec lives next to the routes so adding an endpoint forces an
+explicit review of its public shape."
+
+Both were right about half of the file. The half the recorded decision had
+right was `paths`; the half it had wrong was `components.schemas`, and the
+wrong half had already cost two client-visible defects that nothing caught —
+there was no test that read the document at all.
+
+- `CapabilitiesResponse.endpoints` described `{auth, input, output,
+  rateLimited, pricingUsdt}`. The route has always emitted `{method, path,
+  description, requiresPayment}`, and it emits a `cache` block the document did
+  not mention. A client generated from it reads four fields that are never
+  sent.
+- `CreateAuditRequest.mode` declared `default: 'quick'`. R-37 changed the
+  default to `full` in the schema and not in the document, so the contract
+  told a buyer who omitted the field that they were getting the smaller
+  report — the field they paid for, described backwards.
+
+**Decision.** Split the file along the line between what is derivable and what
+is a judgement.
+
+1. **`components.schemas` is generated.** `apps/api/src/openapi-schemas.ts`
+   holds a Zod schema per component, reusing the ones the routes already
+   validate with and defining the response envelopes the routes build by hand.
+   `buildOpenApiSpec()` converts them. A shape that changes in the source
+   changes in the document on the next build, or `pnpm openapi:check` fails.
+   There is no third copy to keep in step, and there is no test that has to
+   know what a shape contains.
+2. **`paths` stays hand-written, in `openapi.ts`.** Which status codes an
+   operation can return, whether a route is paid, what a 409 means — none of
+   that is derivable from a type, and the reviewer should not have to jump
+   files. This is the original decision, unchanged, and it is the reason the
+   file did not move.
+3. **The committed file is a gate, not a convenience.** `docs/openapi.json` is
+   checked in so a client author can read the contract without starting
+   Fastify; a committed generated file rots the moment someone edits the source
+   and forgets to rebuild, so `pnpm openapi:check` rebuilds it in memory and
+   byte-compares. It runs in CI beside `docs:check`, which does the same job
+   for prose facts.
+4. **`/` and `/docs/openapi.json` moved into `routes/meta.ts`.** They were
+   written straight onto the instance in `server.ts`, which made them invisible
+   to the coverage test. The gate would have needed an exemption list, and a
+   list of exemptions is a list nobody re-reads — the failure mode R-31 is
+   about. So they became registrars like everything else, and the gate has no
+   list.
+
+**What the gate does not do.** It cannot prove the document is *true*, only
+that it is self-consistent and covers every route. That gap is what let two
+schemas describe bodies the server never sends. `api.integration.test.ts` now
+parses real responses through the published schemas for the same reason:
+generation makes the two copies impossible, and a schema can still describe a
+shape nothing emits.
+
+**Alternatives rejected.**
+
+- **Generate the whole document, paths included.** The honest version of that
+  requires a DSL over the routes — which is a second definition of every
+  operation, in a format nobody reads casually, replacing a file a reviewer
+  reads in five minutes. The information being captured (that a 409 means
+  "not completed yet") is not in the route either; it is in the handler's
+  comments.
+- **Keep both halves hand-written and add a test.** The test would compare a
+  JSON literal to a JSON literal, or parse the source text for shapes, which is
+  `scripts/docs-facts.ts`'s approach and is right there and wrong here:
+  `docs-facts` reads *numbers* out of files, and a schema is a recursive
+  structure. The comparison would be the third copy.
+- **Publish the schema but do not commit the file.** Then the only way to read
+  the contract is to run the service, and the gate has nothing to compare
+  against. The file is 1.5k lines of generated JSON, which is what a contract
+  looks like when it is written down.
+
+**Related.** `BACKLOG.md` (the item, closed 2026-10-22), R-79, D-031 (the
+`docs-facts` markers, same problem in prose).

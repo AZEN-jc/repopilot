@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import type { ZodType } from 'zod';
 import { buildApp, type AppDeps } from '../server.js';
+import { SPEC_SCHEMAS } from '../openapi-schemas.js';
 import type { AuditPipeline } from '@repopilot/core';
 import type { MetadataAnalyzer } from '@repopilot/core';
 import type { Report, RepoMetadata, FileEntry } from '@repopilot/core';
@@ -69,9 +71,28 @@ class FakePipeline {
     this.overrides.set(repoUrl, report);
   }
 
+  /**
+   * Repositories whose audit throws, so the `failed` branch of the job
+   * lifecycle is reachable.
+   *
+   * Every other test here drives a job to `completed`, which left the failed
+   * envelope — the one with `error.code`, `error.message` and `failedAt` — with
+   * no assertion at all against what the server sends. The published contract
+   * describes it; nothing checked that the description was true.
+   */
+  private failures = new Map<string, { code: string; message: string }>();
+
+  failOn(repoUrl: string, code: string, message: string): void {
+    this.failures.set(repoUrl, { code, message });
+  }
+
   async run(input: { repoUrl: string }) {
     this.lastInput = input;
     this.runs += 1;
+    const failure = this.failures.get(input.repoUrl);
+    if (failure) {
+      throw Object.assign(new Error(failure.message), { code: failure.code });
+    }
     return {
       report: this.overrides.get(input.repoUrl) ?? fakeReport(),
       truncated: false,
@@ -188,6 +209,24 @@ async function runAudit(app: FastifyInstance, repoUrl: string): Promise<string> 
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`job ${jobId} never completed`);
+}
+
+/**
+ * Parse a response body through the schema the published contract declares.
+ *
+ * The failure message names the endpoint, because a `safeParse` failure on its
+ * own reads as "some Zod error" and the reader has to work out which response
+ * it came from.
+ */
+function asContract<T>(schema: ZodType<T>, body: unknown, what: string): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+      .join('; ');
+    throw new Error(`${what} does not match the published contract — ${issues}`);
+  }
+  return parsed.data;
 }
 
 interface QualityBody {
@@ -330,6 +369,137 @@ describe('API integration', () => {
     expect(body.name).toBe('RepoPilot');
     expect(body.paymentMode).toBe('mock');
     expect(body.pricing.audit.amount).toBe('0.02');
+  });
+
+  /**
+   * The published contract, against the wire.
+   *
+   * `openapi.test.ts` proves the document is internally sound and covers every
+   * route. It cannot prove the document is *true*: a schema can be perfectly
+   * self-consistent and describe a body the server never sends. That is exactly
+   * how `CapabilitiesResponse.endpoints` came to list `auth` / `input` /
+   * `output` — four fields the route has never emitted — while the `cache`
+   * block it does emit was missing from the document.
+   *
+   * So every response the flow produces is parsed through the schema the
+   * document publishes for it. A field renamed on one side and not the other
+   * fails here, in the same run that proves the endpoint works.
+   */
+  it('sends the shapes the published contract describes', async () => {
+    const root = await app.inject({ method: 'GET', url: '/' });
+    expect(root.statusCode).toBe(200);
+    asContract(SPEC_SCHEMAS.RootResponse, root.json(), 'GET /');
+
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    asContract(SPEC_SCHEMAS.HealthResponse, health.json(), 'GET /health');
+
+    const caps = await app.inject({ method: 'GET', url: '/api/v1/capabilities' });
+    asContract(SPEC_SCHEMAS.CapabilitiesResponse, caps.json(), 'GET /api/v1/capabilities');
+
+    // The error envelope, both from input validation and from a missing row.
+    const badInput = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      payload: { repoUrl: 'not-a-url' },
+    });
+    expect(badInput.statusCode).toBe(400);
+    asContract(SPEC_SCHEMAS.ErrorResponse, badInput.json(), '400 from POST /api/v1/audits');
+
+    const unknownJob = await app.inject({ method: 'GET', url: '/api/v1/audits/no-such-job' });
+    expect(unknownJob.statusCode).toBe(404);
+    asContract(SPEC_SCHEMAS.ErrorResponse, unknownJob.json(), '404 from GET /api/v1/audits/{jobId}');
+
+    // The paid cycle: challenge → queue → answer.
+    const repoUrl = 'https://github.com/okx/contract-shape';
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(create.statusCode).toBe(402);
+    const challenge = asContract(
+      SPEC_SCHEMAS.PaymentChallenge,
+      create.json(),
+      '402 from POST /api/v1/audits',
+    );
+    expect('payment' in challenge && 'nextAction' in challenge).toBe(true);
+    const paymentId = 'payment' in challenge ? challenge.payment.paymentId : '';
+
+    const paid = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'x-payment': `mock:${paymentId}` },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(paid.statusCode).toBe(202);
+    const queued = asContract(
+      SPEC_SCHEMAS.AuditQueuedResponse,
+      paid.json(),
+      '202 from POST /api/v1/audits',
+    );
+    expect(queued.status).toBe('queued');
+
+    // Poll. The first answer may still be 202, which is the *other* shape the
+    // document publishes for this route and the reason there are two.
+    let finished: string | null = null;
+    for (let i = 0; i < 50 && finished === null; i += 1) {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${queued.jobId}` });
+      if (res.statusCode === 202) {
+        asContract(SPEC_SCHEMAS.AuditPendingResponse, res.json(), '202 from GET /api/v1/audits/{jobId}');
+      } else {
+        const status = asContract(
+          SPEC_SCHEMAS.AuditStatusResponse,
+          res.json(),
+          '200 from GET /api/v1/audits/{jobId}',
+        );
+        finished = status.status;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(finished).toBe('completed');
+  });
+
+  it('sends the failed-job shape the published contract describes', async () => {
+    const repoUrl = 'https://github.com/okx/contract-shape-failure';
+    pipeline.failOn(repoUrl, 'PIPELINE_FAILED', 'the pipeline could not finish');
+
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(create.statusCode).toBe(402);
+    const { jobId, payment } = create.json() as { jobId: string; payment: { paymentId: string } };
+
+    const paid = await app.inject({
+      method: 'POST',
+      url: '/api/v1/audits',
+      headers: { 'x-payment': `mock:${payment.paymentId}` },
+      payload: { repoUrl, mode: 'quick' },
+    });
+    expect(paid.statusCode).toBe(202);
+
+    let failed = false;
+    for (let i = 0; i < 50 && !failed; i += 1) {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}` });
+      if (res.statusCode === 200) {
+        const status = asContract(
+          SPEC_SCHEMAS.AuditStatusResponse,
+          res.json(),
+          '200 from GET /api/v1/audits/{jobId} (failed)',
+        );
+        if (status.status === 'failed') {
+          // The code is the worker's mapping, not part of the contract; what
+          // the contract promises is that a code and a message are there.
+          expect(status.error.code.length).toBeGreaterThan(0);
+          expect(status.error.message.length).toBeGreaterThan(0);
+          expect(typeof status.failedAt).toBe('string');
+          failed = true;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(failed).toBe(true);
   });
 
   it('POST /api/v1/audits rejects bad URLs with 400', async () => {

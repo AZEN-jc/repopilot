@@ -224,7 +224,21 @@ Tracked work, in priority order, updated as items are completed.
   out free audits to anyone who can reach it. `assertBindable()` refuses a
   non-loopback host while the mode is mock, and the default is loopback. D-045,
   R-78.
-- [ ] **OpenAPI generator script** to publish `/docs/openapi.json`
+- [x] **OpenAPI generator script** to publish `/docs/openapi.json`. Done
+  2026-10-22. The item said "generator", and `apps/api/src/openapi.ts` opened
+  with "Hand-written (no codegen)" — the recorded decision said not to, and it
+  was right about the paths and wrong about the schemas. Both halves are now
+  built the way their failure mode deserves: `components.schemas` is generated
+  from Zod (`openapi-schemas.ts`), because a hand-copied shape is a second copy
+  that can only drift, and it had: `CapabilitiesResponse.endpoints` described
+  four fields the route has never emitted while the `cache` block it does emit
+  was missing entirely, and `CreateAuditRequest.mode` declared the default
+  `quick` that R-37 changed to `full` in the code and not in the document.
+  `paths` stays hand-written, because "which status codes does this return and
+  what does a 409 mean" is a review decision rather than a derivable fact.
+  The gate is `pnpm openapi:check` (rebuild, byte-compare with the committed
+  `docs/openapi.json`) plus a test that every registered route is documented,
+  every `$ref` resolves, and no OpenAPI 3.0 keyword survives. D-046, R-79.
 - [ ] **OpenTelemetry traces**
 - [ ] **Rate-limit per API key** (not just IP) — once key issuance is shipped
 - [ ] **Dead-Letter UI** for permanently failed jobs (intentionally
