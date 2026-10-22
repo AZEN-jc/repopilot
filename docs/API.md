@@ -22,25 +22,36 @@ Base URL: `http://localhost:4000` (default). All routes are under
 
 ## `GET /health`
 
-Liveness probe. Always returns 200 if the process is up.
+Liveness probe. Always returns 200 if the process is up; the body says whether
+what the process depends on is answering.
 
 **Response**
 
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "paymentMode": "mock",
-  "database": "ok"
-}
-```
+<!-- docs-facts:health-response-fields -->
+| Field | Type | Values |
+| --- | --- | --- |
+| `status` | string | `"ok"` \| `"degraded"` |
+| `version` | string | — |
+| `paymentMode` | string | `"mock"` \| `"okx"` |
+| `database` | string | `"ok"` \| `"degraded"` |
+| `queue.driver` | string | `"inline"` \| `"pg-boss"` |
+| `queue.status` | string | `"ok"` \| `"degraded"` \| `"unavailable"` |
+| `queue.acceptingJobs` | boolean | — |
+| `queue.pending` | integer ≥ 0 (optional) | — |
+| `queue.active` | integer ≥ 0 (optional) | — |
+<!-- docs-facts:end -->
 
-| Field         | Values                | Notes                                  |
-|---------------|-----------------------|----------------------------------------|
-| `status`      | `"ok"`                | Always `"ok"` when the process is up.  |
-| `version`     | semver string         | From `package.json`.                   |
-| `paymentMode` | `"mock"` \| `"okx"`   | The active `PaymentAdapter`.           |
-| `database`    | `"ok"`                | Always `"ok"` in this build.           |
+`status` is `"ok"` only when the database answers, the queue reports `ok`, and
+the queue is still accepting jobs; otherwise `"degraded"`. A process that is up
+with a broken dependency therefore answers 200 with `"degraded"` — a restart
+orchestrator and a human paging on the same endpoint need different questions
+answered, and the split is in the body rather than the status code.
+
+`queue.pending` is the work the queue has accepted and not finished, the running
+job included; `queue.active` is the running part of it, so `pending - active` is
+the depth. Both are absent when the driver cannot answer — the inline driver
+before `start()`, and the pg-boss driver after a failed `getQueueStats`, where
+`queue.status` is `"degraded"` in the same reply.
 
 This endpoint is not rate-limited.
 

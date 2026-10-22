@@ -68,7 +68,9 @@ repopilot/
 
 ## Service endpoints (local)
 
-- `GET /health` — liveness + payment mode + db status
+- `GET /health` — liveness + payment mode + db status + queue depth
+  (the response's field table is generated into `docs/API.md` by
+  `pnpm docs:check`, so it cannot list a field the schema does not have)
 - `GET /api/v1/capabilities` — service metadata + input/output schema + pricing
 - `POST /api/v1/audits` — start a new audit: 402 + challenge on the first call,
   then **202** + `statusUrl` + `pollAfterMs` after the `X-PAYMENT` replay

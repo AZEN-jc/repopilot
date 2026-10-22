@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`health-response-fields`, the `/health` table rendered from its zod
+  schema.** `docs/API.md` was on the list of documents that "carry no derivable
+  facts", which was true of the endpoints and false of this payload: `queue`
+  joined the response and the document kept the four fields it had always
+  listed, through `verify:release` and through CI, for as long as the field
+  existed. `docs:check` can see a count that disagrees with the tree; it cannot
+  see a field the document never learned about. The table and its enum members
+  are now generated from `ResponseSchema`, and the parser throws on a field
+  shape it cannot read rather than rendering a table with a row missing.
+  (R-76's `active` was the second field to arrive without a doc line.)
 - **`AppDeps.queue`, so a test can make `enqueue` throw.** The queue is built
   inside `buildApp`, which left the route's enqueue-failure path reachable only
   by racing a real shutdown against a real request — which is why it was never
@@ -1727,6 +1737,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`docs/API.md` described a `/health` response that stopped existing.** Four
+  fields and a note saying `status` is "always `ok` when the process is up" and
+  `database` "always `ok` in this build" — three claims, none of them true since
+  the queue block and the degraded path landed. The section is now the
+  generated table plus the part no schema carries: which value means what, and
+  why `pending` and `active` are two numbers. The JSON example is gone rather
+  than corrected, because an example is a second copy of the field list and the
+  copy is what drifted.
 - **The 503 on a refused enqueue wrote a state the retry could not leave, and
   the driver's error text into a caller-visible column.** `POST /audits` caught
   the queue's throw, called `service.fail(job, 'ENQUEUE_FAILED', msg)`, then

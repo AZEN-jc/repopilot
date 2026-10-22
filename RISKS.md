@@ -135,12 +135,14 @@ Active risks the team is aware of and how they are mitigated.
   — Fixed: the row stays `queued`, the message goes to the log
 - [R-76](#r-76--health-calls-a-queue-that-never-started-ok-and-gives-two-states-one-number)
   — Fixed: not-started is `unavailable`, and `active` splits `pending`
+- [R-77](#r-77--a-queued-job-has-no-deadline-and-only-a-re-enqueue-can-move-it)
+  — Accepted residual: the sweep needs a threshold the row cannot justify
 
 ---
 
 ## How to read this file
 
-Seventy-five entries (`R-41` is unused; the numbering jumps). Every one of them
+Seventy-six entries (`R-41` is unused; the numbering jumps). Every one of them
 carries a `**Status:**` line as of 2026-10-08, and the line starts the line —
 a status folded into a `**Severity:**` line is invisible to a search and reads
 as no status at all, which is how three of them were lost until then. Five
@@ -3929,3 +3931,60 @@ part on both drivers (`inline-audit-queue.ts:186`,
 `unavailable` with no counts, and one worker holding `first` while `second`
 waits reports `{ pending: 2, active: 1 }`. Removing the `started` guard fails
 the first; dropping `active` fails the second.
+
+## R-77 — A queued job has no deadline, and only a re-enqueue can move it
+
+**Severity:** Low for money, Medium for trust — the row is the only record that
+the work was accepted, and it never resolves.
+**Likelihood:** Narrow: the enqueue has to fail after the row exists, or the
+inline driver has to die holding a backlog.
+**Status:** Accepted residual — a sweep needs a threshold the row cannot justify
+on its own, and the two drivers cannot justify it from the same place.
+
+**What happens.** `AuditWorker.runOnce` ages exactly one state. A row parked in
+`processing` past `staleProcessingMs` is reclaimed (`audit-worker.ts:192-224`),
+because a crashed attempt is otherwise a dead end. A row in `queued` is never
+looked at: the claim is `expectedStatus: 'queued'`, so anything that picks the
+row up moves it forward, and nothing that fails to pick it up can see that it
+should have.
+
+Three ways a job ends up `queued` with nothing behind it:
+
+- **The enqueue throws.** Since R-75 the row is deliberately left `queued`
+  (`audits.ts:452-464`) — that is what makes the retry the 503 asks for work.
+  The payment was verified earlier in the same request, so by this point the
+  buyer has paid and the row is the receipt for it.
+- **The process dies between the insert and the enqueue.** The row exists, no
+  queue entry does, and the client never got a response to retry.
+- **The inline driver is killed with a backlog.** `pending` is a `string[]` in
+  memory (`inline-audit-queue.ts:80`); R-70 made a graceful `stop()` drain it,
+  and nothing survives SIGKILL.
+
+`GET /api/v1/audits/:jobId` answers `status: "queued"` in all three, with no
+deadline and nothing to distinguish it from a job that is one poll away from
+running. The client's `pollAfterMs` keeps it polling a row that will not move.
+
+**Why it is accepted rather than fixed.** Every version of the fix needs a
+decision the code cannot make for itself:
+
+- **A reaper that writes `failed`** needs a threshold, and the evidence that a
+  job will never run lives in the *queue*, not in the row. pg-boss's `job` table
+  and the inline driver's in-memory array are different systems, and an old row
+  may be sitting in a paused pg-boss queue that drains on Monday. A threshold
+  picked from `created_at` alone would fail work that was about to run.
+- **Re-enqueueing from the read path** turns `GET` into a write that any poller
+  can trigger, which is how a status endpoint becomes a way to run a paid audit
+  for free.
+- **A deadline stated in the response** would be a promise about the queue that
+  the API cannot keep, which is R-28's shape: a signal that reads as a
+  capability the service does not have.
+
+What bounds the cost today is the topology. Production runs pg-boss, which is
+durable and retries; `config.ts:186-190` refuses `AUDIT_QUEUE_DRIVER=inline`
+under `NODE_ENV=production` (R-16). The window left is the enqueue throw, and
+there the client was told, in the same response — 503, `Retry-After: 1` — to
+POST again, and that POST is the only thing that can revive the row.
+**Trigger:** the first refund request for a paid audit whose job never started.
+The answer at that point is a `queuedAt` column and a sweep with a stated
+threshold; it is worth building with a real complaint in hand rather than
+guessing the threshold now.

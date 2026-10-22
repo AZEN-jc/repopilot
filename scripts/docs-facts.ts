@@ -27,6 +27,7 @@
  *   compose-service-count the number of compose services
  *   compose-services      the compose service table
  *   fixture-count         the number of fixture repositories
+ *   health-response-fields the `/health` response fields, from its zod schema
  *
  * Which documents are covered is itself a rule
  * --------------------------------------------
@@ -267,6 +268,113 @@ function readFixtures(): string[] {
     .sort();
 }
 
+/* ──────────────── the /health response, read from its own schema ─────────── */
+
+interface ZodField {
+  /** Dotted name — `status`, `queue.pending`. */
+  name: string;
+  /** `string`, `boolean`, `integer ≥ 0`. */
+  type: string;
+  /** Enum members, empty when the field is not an enum. */
+  values: string[];
+  optional: boolean;
+}
+
+/**
+ * Every `const Name = z.object({ … });` in a source file, keyed by name.
+ *
+ * A text read rather than an import, for the reason this file's header gives:
+ * no build. `routes/health.ts` imports `CORE_VERSION` from `@repopilot/core`,
+ * so importing it here would make `docs:check` — which runs before anything is
+ * built — depend on a `dist/`.
+ *
+ * Deliberately narrow, and it throws instead of skipping. It understands
+ * `name: expr,` one field per line, which is the only shape these two schemas
+ * have, and a line it cannot read is an error rather than a line to leave out.
+ * A parser that skipped what it did not understand would render a table with a
+ * field missing, which is the defect this block exists to prevent, one level
+ * down (D-032).
+ */
+function readZodObjects(rel: string): Map<string, string> {
+  const src = read(rel);
+  const objects = new Map<string, string>();
+  for (const m of src.matchAll(/const (\w+) = z\.object\(\{([\s\S]*?)\n\}\);/g)) {
+    objects.set(m[1] ?? '', m[2] ?? '');
+  }
+  if (objects.size === 0) {
+    throw new Error(
+      `docs-facts: no "const X = z.object({…});" literal found in ${rel}. ` +
+        'The health table is rendered from that schema, so an unreadable ' +
+        'source file must fail the check rather than render an empty table.'
+    );
+  }
+  return objects;
+}
+
+function readZodFields(body: string, objects: Map<string, string>, where: string): ZodField[] {
+  const fields: ZodField[] = [];
+  for (const line of body.split('\n')) {
+    if (line.trim() === '') continue;
+    const m = /^ {2}(\w+): (.+),$/.exec(line);
+    if (m === null) {
+      throw new Error(
+        `docs-facts: ${where}: cannot read the field line "${line}". ` +
+          'One field per line, two-space indent, trailing comma.'
+      );
+    }
+    fields.push(...describeZodField(m[1] ?? '', m[2] ?? '', objects, where));
+  }
+  return fields;
+}
+
+/**
+ * One `name: expr` pair, expanded to one entry per leaf field.
+ *
+ * `queue: QueueSchema` is a reference to another `z.object`, so the table needs
+ * `queue.driver` and its siblings rather than a row that says "object". The
+ * dotted name is also why the doc can talk about `queue.pending` without a
+ * second hand-written list of what is inside `queue`.
+ */
+function describeZodField(
+  name: string,
+  expr: string,
+  objects: Map<string, string>,
+  where: string
+): ZodField[] {
+  let text = expr.trim();
+  let optional = false;
+  if (text.endsWith('.optional()')) {
+    optional = true;
+    text = text.slice(0, -'.optional()'.length);
+  }
+
+  const enumMatch = /^z\.enum\(\[(.*)\]\)$/.exec(text);
+  if (enumMatch !== null) {
+    const values = [...(enumMatch[1] ?? '').matchAll(/'([^']*)'/g)].map((v) => v[1] ?? '');
+    return [{ name, type: 'string', values, optional }];
+  }
+  if (text === 'z.string()') return [{ name, type: 'string', values: [], optional }];
+  if (text === 'z.boolean()') return [{ name, type: 'boolean', values: [], optional }];
+  if (text === 'z.number().int().nonnegative()') {
+    return [{ name, type: 'integer ≥ 0', values: [], optional }];
+  }
+
+  const nested = objects.get(text);
+  if (nested !== undefined) {
+    return readZodFields(nested, objects, `${where}.${name}`).map((f) => ({
+      ...f,
+      name: `${name}.${f.name}`,
+      optional: optional || f.optional,
+    }));
+  }
+
+  throw new Error(
+    `docs-facts: ${where}: cannot read the schema of "${name}: ${expr}". ` +
+      'Extend describeZodField() — a field it cannot describe must not become ' +
+      'a row the document silently does not have.'
+  );
+}
+
 const TOOLS = readMcpTools();
 const WORKSPACES = readWorkspaces();
 const SERVICES = readComposeServices();
@@ -341,6 +449,40 @@ const RENDERERS: Record<string, () => string> = {
     }
     return rows.join('\n');
   },
+
+  /**
+   * The `/health` response table in `docs/API.md`.
+   *
+   * `docs/API.md` used to be in `BLOCK_FREE_DOCS` — "endpoints and payloads, no
+   * derivable counts" — and that was true of the endpoints and false of this
+   * payload. `queue` was added to the response and the document kept the four
+   * fields it had always listed, through `verify:release`, through CI, for as
+   * long as the field existed: the check can see a count that disagrees with
+   * the tree, and cannot see a field the document never learned about.
+   *
+   * The table is therefore rendered from `ResponseSchema` rather than written
+   * beside it, and the enum members come from the same place. What stays
+   * hand-written is the part no schema carries: which value means what.
+   */
+  'health-response-fields': () => {
+    const rel = 'apps/api/src/routes/health.ts';
+    const objects = readZodObjects(rel);
+    const body = objects.get('ResponseSchema');
+    if (body === undefined) {
+      throw new Error(`docs-facts: ${rel} has no "ResponseSchema" z.object`);
+    }
+    const fields = readZodFields(body, objects, `${rel} ResponseSchema`);
+    const rows = ['| Field | Type | Values |', '| --- | --- | --- |'];
+    for (const field of fields) {
+      const type = field.optional ? `${field.type} (optional)` : field.type;
+      const values =
+        field.values.length === 0
+          ? '—'
+          : field.values.map((v) => `\`"${v}"\``).join(' \\| ');
+      rows.push(`| \`${field.name}\` | ${type} | ${values} |`);
+    }
+    return rows.join('\n');
+  },
 };
 
 /* ────────────────────────────── block plumbing ──────────────────────────── */
@@ -373,6 +515,7 @@ const BLOCK_DOCS: Record<string, string[]> = {
     'workspace-layout',
   ],
   'ROADMAP.md': ['workspace-count'],
+  'docs/API.md': ['health-response-fields'],
   'docs/ARCHITECTURE.md': ['compose-services', 'mcp-tools-box'],
   'docs/INDEX.md': ['mcp-tool-count'],
   'docs/MCP_CLIENT_SETUP.md': ['mcp-tool-count'],
@@ -395,7 +538,6 @@ const BLOCK_FREE_DOCS: Record<string, string> = {
     'a risk register; the version labels record when a risk was mitigated, so ' +
     'no number here is derivable. Its shape is checked instead of its contents, ' +
     'by `checkRisksRegister()`',
-  'docs/API.md': 'the HTTP surface; endpoints and payloads, no derivable counts',
   'docs/AVATAR_BRIEF.md': 'a design brief; its measurements are re-taken by preflight:production',
   'docs/DEPLOYMENT.md': 'operator instructions',
   'docs/EXTERNAL_ACTIONS.md': 'the user-side checklist',
