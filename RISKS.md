@@ -137,16 +137,24 @@ Active risks the team is aware of and how they are mitigated.
   — Fixed: not-started is `unavailable`, and `active` splits `pending`
 - [R-77](#r-77--a-queued-job-has-no-deadline-and-only-a-re-enqueue-can-move-it)
   — Accepted residual: the sweep needs a threshold the row cannot justify
+- [R-78](#r-78--the-mcp-servers-http-transport-is-unauthenticated-by-design)
+  — Mitigated by default: loopback, and mock payment is refused off it
 
 ---
 
 ## How to read this file
 
-Seventy-six entries (`R-41` is unused; the numbering jumps). Every one of them
-carries a `**Status:**` line as of 2026-10-08, and the line starts the line —
-a status folded into a `**Severity:**` line is invisible to a search and reads
-as no status at all, which is how three of them were lost until then. Five
-values, and they mean different things:
+<!-- docs-facts:risk-count -->77<!-- docs-facts:end --> entries (`R-41` is unused;
+the numbering jumps). The count is generated — `scripts/docs-facts.ts` renders it
+from the `## R-` headings — because it was written as an English numeral and
+hand-bumped on every addition, which is the one number a reader cannot check at a
+glance. Everything else in this file is prose on purpose: the version labels
+record when a risk was mitigated, so nothing else here is derivable, and the
+*shape* is what is checked instead of the contents, by `checkRisksRegister()`.
+Every entry carries a `**Status:**` line as of 2026-10-08, and the line starts
+the line — a status folded into a `**Severity:**` line is invisible to a search
+and reads as no status at all, which is how three of them were lost until then.
+Five values, and they mean different things:
 
 - **Fixed `<date>`** — the mitigation is in the tree, and the entry says what
   would have to break for it to come back.
@@ -4022,3 +4030,58 @@ POST again, and that POST is the only thing that can revive the row.
 The answer at that point is a `queuedAt` column and a sweep with a stated
 threshold; it is worth building with a real complaint in hand rather than
 guessing the threshold now.
+
+## R-78 — The MCP server's HTTP transport is unauthenticated by design
+
+**Severity:** Medium — a paid tool reachable by anything that can route to the
+port, and no credential between the two.
+**Likelihood:** Certain for any deployment that sets `REPOPILOT_MCP_HOST` to a
+routable address; zero for the default, which is loopback.
+**Status:** Mitigated by design — the bind address and the payment mode are the
+mitigations, and both are enforced at startup rather than documented.
+
+**What happens.** `REPOPILOT_MCP_TRANSPORT=http` makes the MCP server answer on
+a socket (`POST /mcp`, `GET /mcp`, `DELETE /mcp`) instead of stdio. The endpoint
+has no authentication: no API key, no token, no origin check. `audit_github_repository`
+and `reaudit_repository` are reachable by any client that can complete an MCP
+handshake, and in `PAYMENT_MODE=mock` they auto-verify their own challenge — so
+the pipeline runs for free, with no log line, for anyone who can reach the port.
+
+This is the same shape as the HTTP API, which is also unauthenticated and also
+paid. The difference is that the API's exposure is a deliberate deployment
+decision made in a Dockerfile, and the MCP server's is a one-variable change
+(`REPOPILOT_MCP_HOST`) that reads like a networking setting.
+
+**What the mitigation is.** `assertBindable()` (`packages/mcp-server/src/http.ts`)
+refuses to open a socket on a non-loopback address while the payment mode is
+`mock`, and the process exits 1 with the two ways out named. The default host is
+`127.0.0.1`, so the exposed configuration has to be asked for twice: once by
+choosing a routable host, once by choosing the real payment rail. The transport
+itself is opt-in (`REPOPILOT_MCP_TRANSPORT`, default `stdio`), so an upgrade
+cannot expose a server that was not exposed before.
+
+A routable bind with `PAYMENT_MODE=okx` is allowed, and there the gate is the
+payment handshake: every paid tool mints a challenge the caller has to settle.
+That is a real gate, not a decorative one, but it is the *only* one — an
+attacker with a funded wallet can run audits, and the server will not know who
+they are.
+
+**What it does not cover.**
+
+- **Denial of service.** The session cap (64) and the 1 MB body cap bound the
+  damage, and nothing rate-limits the endpoint. An unauthenticated client can
+  hold 64 sessions open until the idle sweep reclaims them.
+- **The free tools' network cost.** `free_check` and the four intelligence tools
+  fetch from GitHub. They are free by design (D-019) and they are also free to
+  abuse: a public endpoint turns the server into an anonymous GitHub proxy for
+  any repository `ALLOWED_REPO_HOSTS` permits.
+- **TLS.** The server speaks plain HTTP. A routable deployment is expected to
+  put a proxy in front of it, and nothing in the process says so.
+
+**Detection.** `GET /health` reports `paymentMode`, `sessions` and `maxSessions`
+— enough to see a routable deployment that is also running mock, which is the
+one combination `assertBindable` refuses. Anything past that is a proxy's access
+log, not this process's.
+
+**Related.** D-045 (the decision), R-02 (the same failure mode on the API),
+D-019 (why the free tools are free).

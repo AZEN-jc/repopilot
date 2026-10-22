@@ -211,7 +211,19 @@ Tracked work, in priority order, updated as items are completed.
   `PgBossAuditQueueDeps` gained an optional `queueName` so the cases do
   not share a queue — a pg-boss queue is global to the database, not
   the process.
-- [ ] **MCP HTTP transport (SSE).** Deferred per rc.2 scope.
+- [x] **MCP HTTP transport.** Done 2026-10-22, and it is **Streamable HTTP**,
+  not the SSE-only transport this item named — that one is deprecated in the
+  specification and superseded in the SDK, and the SDK ships both, so doing it
+  "as written" would have cost a rewrite. `REPOPILOT_MCP_TRANSPORT=http` selects
+  it (`POST`/`GET`/`DELETE /mcp`, plus `/health`); the default stays stdio, so an
+  upgrade cannot change a working client's transport. Sessions are stateful
+  because `JobStore` is per-server — a stateless transport answers
+  `job_not_found` to the second call of every audit — capped at 64 and swept
+  after ten idle minutes. The bind address turned out to be a payment decision:
+  mock mode auto-verifies its own challenge, so a socket with mock payment hands
+  out free audits to anyone who can reach it. `assertBindable()` refuses a
+  non-loopback host while the mode is mock, and the default is loopback. D-045,
+  R-78.
 - [ ] **OpenAPI generator script** to publish `/docs/openapi.json`
 - [ ] **OpenTelemetry traces**
 - [ ] **Rate-limit per API key** (not just IP) — once key issuance is shipped

@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Streamable HTTP transport for the MCP server.** `REPOPILOT_MCP_TRANSPORT=http`
+  serves the same fourteen tools on `POST`/`GET`/`DELETE /mcp` plus `/health`,
+  for hosts that cannot spawn a child process. The default stays stdio, so an
+  upgrade cannot change a working client's transport. Streamable HTTP rather
+  than the SSE-only transport `BACKLOG.md` asked for: that one is deprecated in
+  the specification and superseded in the SDK, which ships both. Sessions are
+  stateful because `JobStore` is per-server — a stateless transport answers
+  `job_not_found` to the second call of every audit — capped at 64, and swept
+  after ten idle minutes because a killed client sends no `DELETE`.
+  The bind address turned out to be a payment decision: in `PAYMENT_MODE=mock`
+  the paid tools auto-verify their own challenge, so a socket another host can
+  reach hands out free audits. `assertBindable()` refuses a non-loopback address
+  while the mode is mock, the default is `127.0.0.1`, and the refusal names both
+  ways out. Thirteen cases in `http.test.ts` drive a real MCP client over the
+  wire; three mutations (skipping the bind check, stopping the sweep, dropping
+  the session cap) turn one case red each. D-045, R-78.
 - **`Report.manifests`, the list of dependency manifests the tree holds, and
   `REPORT_VERSION` 1.5.** The quality contract is a pure function of a `Report`,
   and two of its checks are answered by rules that only run when a root
@@ -50,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is itself a failure, so a reworded sentence cannot leave a check that
   looks at nothing. (Four injected versions, three caught by the check and one
   by the block comparison.)
+- **`risk-count`, and `RISKS.md` moved into `BLOCK_DOCS`.** The register opened
+  with "Seventy-six entries", written as an English numeral and hand-bumped on
+  every addition — the one number in these documents a reader cannot check by
+  counting, and the one that went stale silently. It is now rendered from the
+  `## R-` headings, which `checkRisksRegister()` already counts. `RISKS.md` was
+  on the "no derivable facts" list with the reason "the version labels record
+  when a risk was mitigated"; that is still true of every entry, and it was
+  never true of the count. (An injected `76` fails with
+  `generated block is stale`.)
 - **`health-response-fields`, the `/health` table rendered from its zod
   schema.** `docs/API.md` was on the list of documents that "carry no derivable
   facts", which was true of the endpoints and false of this payload: `queue`

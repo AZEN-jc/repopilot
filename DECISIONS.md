@@ -80,6 +80,8 @@ Architecture Decision Records (ADR-style, lightweight).
   — A setting in a file nothing reads is a setting that is off
 - [D-044](#d-044--a-wait-that-cannot-say-which-way-it-failed-is-not-a-diagnostic)
   — A wait that cannot say which way it failed is not a diagnostic
+- [D-045](#d-045--a-transport-that-adds-a-socket-adds-a-payment-decision)
+  — A transport that adds a socket adds a payment decision
 
 ---
 
@@ -2550,3 +2552,73 @@ loop. That hole predates this module and is not closed by it.
   `paymentMode=okx`" — so the timeout message can be read literally.
 
 **Related.** `BACKLOG.md` (the item, closed 2026-10-08), R-26, D-042, D-041.
+
+## D-045 — A transport that adds a socket adds a payment decision
+
+**Date:** 2026-10-22
+**Status:** Accepted
+
+**Context.** The MCP server shipped with one transport, stdio, and that choice
+was doing security work nobody had written down. The paid tools (`audit_github_repository`,
+`reaudit_repository`) auto-verify their own challenge when `PAYMENT_MODE=mock`,
+so in mock mode they run the pipeline for free. On stdio that is harmless: the
+only caller is the process that spawned the binary, and spawning it is already
+an act of trust. The moment the same server answers on a socket, "who can call
+this" stops being a question about process ancestry and becomes a question
+about the network — and mock mode turns every paid tool into a free one for
+anyone who can reach the port.
+
+The BACKLOG entry asked for an "MCP HTTP transport (SSE)". Two things had
+changed since it was written: the SDK now ships **Streamable HTTP**, which is
+the transport that supersedes SSE-only, and the payment rail's mock mode made
+the bind address a decision rather than a default.
+
+**Decision.** Four things, and they are one decision:
+
+1. **Streamable HTTP, not `SSEServerTransport`.** `POST /mcp` for client→server,
+   `GET /mcp` for the server→client stream, `DELETE /mcp` to end a session. The
+   SDK ships both; taking the deprecated one would have meant writing the
+   integration a second time when it goes. The BACKLOG entry's word "SSE" was
+   the name of the transport when it was written, not a requirement.
+2. **The transport is opt-in and the default stays stdio.** `REPOPILOT_MCP_TRANSPORT`
+   selects it; unset means stdio. A binary that changed its transport on upgrade
+   would break every client configured for it, silently.
+3. **Loopback by default, and mock payment is refused off loopback.**
+   `assertBindable()` refuses `PAYMENT_MODE=mock` on any address that is not
+   `127.0.0.1`, `::1` or `localhost`, with a message naming the two ways out.
+   This is `validateProductionConfig`'s rule (R-02) applied to the second
+   process that can hand out an audit: the failure mode is identical — a
+   deployment that meant to charge, giving audits away with no log line — and
+   the check belongs where the socket is opened, not in the docs.
+4. **Sessions are stateful, capped, and swept.** `buildMcpServer` owns an
+   in-memory `JobStore`, and three tools read it. A stateless transport would
+   answer `job_not_found` to the second call of every audit: the first call
+   creates the job, the second arrives at a different server. So one server per
+   session, kept until `DELETE`, closed on transport close, and swept after
+   `sessionIdleMs` (10 min) because a killed client sends nothing. `maxSessions`
+   (64) refuses a new session rather than evicting a live one — an eviction
+   breaks a caller mid-audit to protect a resource the caller can see is full.
+
+**What it cannot do.** There is no authentication on the endpoint. An operator
+who binds a routable address with `PAYMENT_MODE=okx` has a public MCP server
+whose paid tools mint real challenges, and the only gate on them is the payment
+handshake itself. That is the same posture as the HTTP API — which is also
+unauthenticated, and also paid — so it is consistent rather than novel, but it
+means "bind 0.0.0.0" is a deployment decision with a bill attached. R-78 records
+it.
+
+**Alternatives rejected.**
+
+- **Stateless transport (a server per request).** Simplest, and it silently
+  breaks the three tools that read `JobStore`. A capability that works on
+  stdio and returns `job_not_found` over HTTP is worse than no transport.
+- **Share one `McpServer` across sessions.** `JobStore` is per-server, so two
+  clients would see each other's audits — a disclosure, not a convenience.
+- **Refuse `mock` on any bind including loopback.** Then the transport could
+  not be tried locally without a real payment rail, which is how a feature ends
+  up untested and then unwritten.
+- **Accept the SSE-only transport the backlog named.** Deprecated in the
+  specification and superseded in the SDK; the cost of doing it "as written"
+  was a rewrite.
+
+**Related.** `BACKLOG.md` (the item, closed 2026-10-22), R-02, R-78, D-003.

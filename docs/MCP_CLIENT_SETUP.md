@@ -7,6 +7,7 @@ RepoPilot as <!-- docs-facts:mcp-tool-count -->14<!-- docs-facts:end --> tools t
 
 - [Build the server](#build-the-server)
 - [Configuration](#configuration)
+- [HTTP transport](#http-transport)
 - [Client setup](#client-setup)
 - [Tool reference](#tool-reference)
 - [Repository intelligence tools](#repository-intelligence-tools)
@@ -56,9 +57,10 @@ at?" before spending money on an audit, and `free_check` is the cheapest
 way to ask. `get_repopilot_capabilities` returns a `billing` map so an
 agent can tell what costs money before calling it.
 
-The current transport is **stdio** (the official MCP TS SDK
-`@modelcontextprotocol/sdk@1.22.0`). HTTP/SSE transport is on the
-roadmap for 0.2.0.
+The default transport is **stdio** (the official MCP TS SDK
+`@modelcontextprotocol/sdk@1.22.0`), which is what every client below is
+configured for. The same binary also serves **Streamable HTTP** for hosts that
+cannot spawn a child process — see [HTTP transport](#http-transport).
 
 ## Build the server
 
@@ -156,11 +158,56 @@ export PRICE_AUDIT="1"
 
 # Optional log level (logs go to stderr).
 export LOG_LEVEL="info"
+
+# Transport. Unset means stdio; `http` serves Streamable HTTP instead.
+export REPOPILOT_MCP_TRANSPORT="stdio"
+
+# Only read when REPOPILOT_MCP_TRANSPORT=http. Loopback by default.
+export REPOPILOT_MCP_HOST="127.0.0.1"
+export REPOPILOT_MCP_PORT="3333"
+export REPOPILOT_MCP_PATH="/mcp"
 ```
 
 The server never holds a wallet key. In `okx` mode it builds the
 challenge and verifies the signature; signing happens in the caller's
 `onchainos` CLI. All `X-PAYMENT` material is redacted in its logs.
+
+## HTTP transport
+
+For a host that cannot spawn a child process — a hosted agent, a browser-based
+client, an editor pointed at a URL — the same binary serves **Streamable HTTP**:
+
+```bash
+REPOPILOT_MCP_TRANSPORT=http REPOPILOT_MCP_PORT=3333 repopilot-mcp
+# repopilot-mcp: listening on http://127.0.0.1:3333/mcp (payment: mock; health at /health)
+```
+
+| Method | Path | What it is |
+| --- | --- | --- |
+| `POST` | `/mcp` | Client → server messages. A POST with no `mcp-session-id` is an `initialize`. |
+| `GET` | `/mcp` | The server → client SSE stream, for a session that has one. |
+| `DELETE` | `/mcp` | Ends the session. |
+| `GET` | `/health` | `status`, `transport`, `path`, `sessions`, `maxSessions`, `paymentMode`. |
+
+A client points at `http://127.0.0.1:3333/mcp`; everything else — tools, inputs,
+outputs — is identical to stdio. Sessions are **stateful**: `list_audit_history`,
+`get_audit_status` and every report tool that takes a `job_id` read an in-memory
+job store, and a stateless transport would answer `job_not_found` to the second
+call of every audit. Up to 64 sessions are kept; one that goes ten minutes
+without a request is closed, because a killed client does not send `DELETE`.
+
+**The bind address is a payment decision.** In `PAYMENT_MODE=mock` the paid tools
+auto-verify their own challenge, so a socket reachable from another host hands
+out free audits to anyone who can reach it. The server refuses to start on a
+non-loopback address while the mode is `mock`:
+
+```text
+repopilot-mcp failed to start: refusing to bind 0.0.0.0 with PAYMENT_MODE=mock — …
+```
+
+Bind `127.0.0.1`, or set `PAYMENT_MODE=okx` with `OKX_PAYMENT_ADDRESS`. The
+endpoint has no authentication of its own; a routable deployment is expected to
+put a proxy in front of it. `RISKS.md` R-78 records what that leaves open.
 
 ## Client setup
 
@@ -770,3 +817,8 @@ will auto-settle the audit without needing a real wallet.
 - All `X-PAYMENT` material is redacted in its logs (the same Pino redact
   list as the API).
 - Logs go to stderr; redirect with shell redirection as needed.
+- The HTTP transport binds `127.0.0.1` and refuses `PAYMENT_MODE=mock` on any
+  other address, because mock mode auto-settles and would make the paid tools
+  free to anyone who can reach the port. A routable bind is allowed only with
+  the real rail, and the endpoint has no authentication beyond the payment
+  handshake itself.

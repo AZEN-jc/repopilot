@@ -493,6 +493,17 @@ const RENDERERS: Record<string, () => string> = {
   'report-version': () => REPORT_VERSIONS.current,
 
   /**
+   * The number of entries in `RISKS.md`.
+   *
+   * It was written as an English numeral ("Seventy-six entries") and hand-bumped
+   * on every addition, which is the one kind of number a reader cannot check by
+   * counting quickly — and the one that went stale silently. `checkRisksRegister()`
+   * already asserts that the number of `## R-` headings equals the number of
+   * parsed entries; this renders the same count where the prose states it.
+   */
+  'risk-count': () => String(RISKS.entries.length),
+
+  /**
    * The versions a stored report may still carry, newest first, as the
    * backticked literals README's sentence needs — with the serial comma,
    * because the list is three or more and the sentence is prose.
@@ -600,6 +611,7 @@ const BLOCK_DOCS: Record<string, string[]> = {
     'workspace-layout',
   ],
   'ROADMAP.md': ['workspace-count'],
+  'RISKS.md': ['risk-count'],
   'docs/API.md': ['health-response-fields'],
   'docs/ARCHITECTURE.md': ['compose-services', 'mcp-tools-box'],
   'docs/INDEX.md': ['mcp-tool-count'],
@@ -619,10 +631,6 @@ const BLOCK_FREE_DOCS: Record<string, string> = {
   'DECISIONS.md': 'dated decision records; a decision is a historical document',
   'MARKETPLACE_LISTING.md': 'marketplace copy; the facts it states are not derivable',
   'README_OKX.md': 'OKX integration notes; the flow, not the counts',
-  'RISKS.md':
-    'a risk register; the version labels record when a risk was mitigated, so ' +
-    'no number here is derivable. Its shape is checked instead of its contents, ' +
-    'by `checkRisksRegister()`',
   'docs/AVATAR_BRIEF.md': 'a design brief; its measurements are re-taken by preflight:production',
   'docs/DEPLOYMENT.md': 'operator instructions',
   'docs/EXTERNAL_ACTIONS.md': 'the user-side checklist',
