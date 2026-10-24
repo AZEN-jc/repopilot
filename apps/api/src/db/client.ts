@@ -201,6 +201,20 @@ export async function runMigrations(db: DB): Promise<void> {
           burned_at TEXT NOT NULL
         )
       `);
+      // Issued API keys. Only the SHA-256 of the key is stored; see
+      // `utils/api-key.ts` for the format and `repositories/api-key-repository.ts`
+      // for the lookup that authentication uses.
+      db.raw.exec(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          key_id TEXT PRIMARY KEY,
+          key_hash TEXT NOT NULL,
+          label TEXT NOT NULL,
+          rate_limit_per_minute INTEGER,
+          created_at TEXT NOT NULL,
+          revoked_at TEXT
+        )
+      `);
+      db.raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_hash ON api_keys(key_hash)`);
       db.raw.exec(`COMMIT`);
     } catch (e) {
       db.raw.exec(`ROLLBACK`);
@@ -291,6 +305,17 @@ export async function runMigrations(db: DB): Promise<void> {
         burned_at TIMESTAMPTZ NOT NULL
       )
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        key_id TEXT PRIMARY KEY,
+        key_hash TEXT NOT NULL,
+        label TEXT NOT NULL,
+        rate_limit_per_minute INTEGER,
+        created_at TIMESTAMPTZ NOT NULL,
+        revoked_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_hash ON api_keys(key_hash)`);
     await client.query(`COMMIT`);
   } catch (e) {
     await client.query(`ROLLBACK`).catch(() => undefined);

@@ -403,6 +403,46 @@ consequence 2).
   and lets the orchestrator restart the container if it stops
   responding.
 
+## API keys (optional)
+
+A key identifies a caller for rate limiting. It does **not** bypass payment:
+a paid gate still needs an `X-PAYMENT` proof and still costs the same. What a
+key changes is the bucket — a caller behind a shared egress, or an agent on a
+rotating address, gets one bucket that follows the credential instead of the
+network it happens to use.
+
+Issue keys against the deployment's database. There is no HTTP endpoint for
+this: an endpoint that mints credentials would need an admin credential to
+protect it, which is the thing being issued.
+
+```bash
+pnpm api-key create --label "ci" --limit 120   # prints the key once
+pnpm api-key list                              # ids, labels, limits, status
+pnpm api-key revoke key_…                      # takes effect on the next request
+```
+
+Only the SHA-256 of the key is stored. The command's output is the only copy
+of the plaintext — if it is lost, issue a new key and revoke the old one.
+
+Clients present it either way; both are read, and `Authorization` wins when
+both are present:
+
+```http
+Authorization: Bearer rp_…
+X-API-Key: rp_…
+```
+
+- No key: anonymous, limited by address, exactly as before.
+- Valid key: limited on `key:<id>`, with `--limit` overriding
+  `RATE_LIMIT_PER_MINUTE` for that key only.
+- Unknown or revoked key: `401 INVALID_API_KEY`. It does not fall back to
+  anonymous — a bad credential that silently downgrades hides a
+  misconfiguration until someone wonders why their limit never moved.
+
+A key-bearing request from a trusted proxy address is still limited on its own
+bucket: the limiter's allow-list matches the generated key, and a key request
+generates `key:<id>` rather than an address.
+
 ## Traces (optional)
 
 RepoPilot emits OpenTelemetry traces. Nothing is exported until you ask for

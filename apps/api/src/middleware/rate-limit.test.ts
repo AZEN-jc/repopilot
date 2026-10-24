@@ -23,7 +23,9 @@
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
-import { registerRateLimit } from './rate-limit.js';
+import { registerRateLimit, registerIdentityAndRateLimit } from './rate-limit.js';
+import { hashApiKey } from '../utils/api-key.js';
+import type { ApiKeyRecord } from '../repositories/api-key-repository.js';
 
 let app: FastifyInstance | undefined;
 
@@ -162,5 +164,99 @@ describe('registerRateLimit key selection', () => {
         (await get('10.0.0.1', { 'x-forwarded-for': '10.0.0.2, 10.0.0.1' })).statusCode,
       ).toBe(200);
     }
+  });
+});
+
+/**
+ * The key is a second identity axis, and the one that matters for callers
+ * behind a shared egress.
+ *
+ * These cases mount both middlewares through `registerIdentityAndRateLimit`
+ * rather than testing `keyGenerator` in isolation, because what they assert is
+ * the composition: a request carrying a key is limited on the key's bucket,
+ * and a request without one is limited on its address. Testing the generator
+ * alone would pass with the auth hook missing entirely.
+ *
+ * The *order* of the two is not observable here — the auth hook is on the root
+ * instance and the limiter is an encapsulated plugin, so Fastify runs auth
+ * first whichever line comes first. Swapping them was measured and these tests
+ * stayed green. The combined registration exists for the day the limiter is
+ * inlined, not because this ordering is load-bearing today.
+ */
+function keyRecord(keyId: string, rateLimitPerMinute: number | null): ApiKeyRecord {
+  return { keyId, label: keyId, rateLimitPerMinute, createdAt: '2026-10-24T00:00:00.000Z', revokedAt: null };
+}
+
+const KEY_A = 'rp_key_a_0000000000000000000000000';
+const KEY_B = 'rp_key_b_0000000000000000000000000';
+const KEY_C = 'rp_key_c_0000000000000000000000000';
+
+const KEYS = new Map<string, ApiKeyRecord>([
+  [hashApiKey(KEY_A), keyRecord('key_a', null)],
+  [hashApiKey(KEY_B), keyRecord('key_b', null)],
+  [hashApiKey(KEY_C), keyRecord('key_c', 1)],
+]);
+
+async function buildAppWithKeys(opts: {
+  perMinute: number;
+  trustedProxyIps?: string[];
+}): Promise<FastifyInstance> {
+  const instance = Fastify({ logger: false });
+  await registerIdentityAndRateLimit(instance, {
+    repo: {
+      async findActiveByHash(hash) {
+        return KEYS.get(hash) ?? null;
+      },
+    },
+    ...opts,
+  });
+  instance.get('/ping', async () => ({ ok: true }));
+  await instance.ready();
+  return instance;
+}
+
+function getWithKey(key?: string, remoteAddress = '203.0.113.7') {
+  return app!.inject({
+    method: 'GET',
+    url: '/ping',
+    remoteAddress,
+    ...(key ? { headers: { 'x-api-key': key } } : {}),
+  });
+}
+
+describe('registerRateLimit with API keys', () => {
+  it('gives each key its own bucket and leaves the address bucket untouched', async () => {
+    app = await buildAppWithKeys({ perMinute: 2 });
+
+    expect((await getWithKey(KEY_A)).statusCode).toBe(200);
+    expect((await getWithKey(KEY_A)).statusCode).toBe(200);
+    expect((await getWithKey(KEY_A)).statusCode).toBe(429);
+
+    // B has spent nothing, and neither has the address A came from.
+    expect((await getWithKey(KEY_B)).statusCode).toBe(200);
+    expect((await getWithKey()).statusCode).toBe(200);
+    expect((await getWithKey()).statusCode).toBe(200);
+    expect((await getWithKey()).statusCode).toBe(429);
+  });
+
+  it('honours a per-key limit instead of the deployment default', async () => {
+    app = await buildAppWithKeys({ perMinute: 5 });
+    expect((await getWithKey(KEY_C)).statusCode).toBe(200);
+    expect((await getWithKey(KEY_C)).statusCode).toBe(429);
+    // Everyone else still gets the deployment default.
+    expect((await getWithKey(KEY_A)).statusCode).toBe(200);
+  });
+
+  it('does not let a key from an allow-listed address bypass the limit', async () => {
+    // `allowList` matches the generated key, and a key-bearing request keys on
+    // `key:<id>` — so loopback is not exempt when it presents a credential.
+    app = await buildAppWithKeys({
+      perMinute: 1,
+      trustedProxyIps: ['203.0.113.7'],
+    });
+    expect((await getWithKey(KEY_B)).statusCode).toBe(200);
+    expect((await getWithKey(KEY_B)).statusCode).toBe(429);
+    // Without a key, the same address is still allow-listed.
+    expect((await getWithKey()).statusCode).toBe(200);
   });
 });

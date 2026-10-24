@@ -9,7 +9,7 @@
  * always go through the repository. If you add a column, add it to BOTH
  * schema files and to both migration paths in `migrate.ts`.
  */
-import { sqliteTable, text, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const jobs = sqliteTable(
   'jobs',
@@ -50,3 +50,32 @@ export const jobs = sqliteTable(
 );
 
 export type JobRow = typeof jobs.$inferSelect;
+
+/**
+ * Issued API keys.
+ *
+ * The plaintext key is never stored — only its SHA-256 — so a database dump
+ * does not hand anyone a working credential. `keyId` is the public handle: it
+ * appears in logs, in `rate-limit` bucket keys, and in the revoke command,
+ * and it is not a secret.
+ *
+ * `rateLimitPerMinute` is nullable and means "use the deployment default";
+ * a key that needs a bigger bucket gets its own number rather than the whole
+ * deployment being raised for one caller.
+ */
+export const apiKeys = sqliteTable(
+  'api_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    keyHash: text('key_hash').notNull(),
+    label: text('label').notNull(),
+    rateLimitPerMinute: integer('rate_limit_per_minute'),
+    createdAt: text('created_at').notNull(),
+    revokedAt: text('revoked_at'),
+  },
+  (t) => ({
+    keyHashIdx: uniqueIndex('uq_api_keys_hash').on(t.keyHash),
+  }),
+);
+
+export type ApiKeyRow = typeof apiKeys.$inferSelect;

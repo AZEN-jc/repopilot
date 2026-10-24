@@ -83,6 +83,7 @@ Architecture Decision Records (ADR-style, lightweight).
 - [D-045](#d-045--a-transport-that-adds-a-socket-adds-a-payment-decision)
 - [D-046](#d-046--generate-the-shapes-hand-write-the-sentences)
 - [D-047](#d-047--traces-are-off-until-someone-asks-and-the-queue-carries-the-context)
+- [D-048](#d-048--a-key-identifies-a-caller-it-does-not-authorise-a-payment)
   — A transport that adds a socket adds a payment decision
 
 ---
@@ -2786,3 +2787,74 @@ collector can sample.
 
 **Related.** `BACKLOG.md` (item closed 2026-10-24), R-80, D-046 (the same
 "generate what is derivable" instinct applied to the contract).
+
+## D-048 — A key identifies a caller; it does not authorise a payment
+
+The backlog item was "rate-limit per API key (not just IP) — once key issuance
+is shipped". Key issuance had not been shipped, and neither had anything else
+that authenticates a caller: `x-api-key` appeared in the repository only in the
+log-redaction lists. So the item was two features, and the second one needed
+decisions the item did not name.
+
+**1. Issuance is an operator command, not an endpoint.** `pnpm api-key create`
+opens the database and writes the row. An HTTP endpoint that mints credentials
+would need an admin credential to protect it — which is the thing being
+issued. There is no account system to hang self-service on, and inventing one
+to avoid a CLI would be a much larger change than the rate limit it unblocks.
+
+**2. Only the SHA-256 is stored.** The plaintext is printed once and never
+written down again, so a database dump does not hand anyone a working
+credential. No salt and no KDF on purpose: the key is 192 bits from
+`randomBytes`, not a password, so there is nothing to slow down and the lookup
+has to stay a single indexed comparison.
+
+**3. A key identifies; it does not authorise.** It never bypasses payment: the
+audit route still demands an `X-PAYMENT` proof, and the price is unchanged. The
+thing a key buys is a stable rate-limit bucket — for an agent on a rotating
+address, or a team behind one egress, the address was the wrong identity.
+
+**4. Absent is anonymous; invalid is 401.** A request with no key behaves
+exactly as before. A request that presents one which does not resolve is
+refused, rather than quietly downgraded to the address bucket: a bad credential
+that still works is a misconfiguration nobody notices until they ask why the
+limit never moved. Unknown and revoked get the same answer, because
+distinguishing them tells a caller that a guessed key once existed.
+
+**5. Per-key limits are nullable.** `null` means "the deployment default"; a
+key that needs more gets its own number rather than the whole deployment being
+raised for one caller. The limiter reads it through `@fastify/rate-limit`'s
+callback form, so one plugin instance serves both.
+
+**On ordering, which the first draft of this change got wrong.** The limiter
+reads `request.apiKey`, so the auth hook has to run first — but not because of
+registration order. `registerApiKeyAuth` adds a root-level `onRequest` hook and
+`registerRateLimit` installs an encapsulated plugin; Fastify runs a parent's
+hooks before a child context's whichever line came first. Swapping the two
+registration lines was measured and every test stayed green. The pair still
+lives in one function, `registerIdentityAndRateLimit`, because the day the
+limiter is inlined onto the root instance the order starts to matter, and there
+should be one place where it is right. The comment that claimed otherwise was
+deleted rather than left as a plausible-sounding lie.
+
+**Alternatives rejected.**
+
+- **A static key list in an environment variable.** Simplest possible, and
+  every issue or revoke is a config edit plus a restart — with no record of
+  which key was created when, and no way to revoke one without restarting the
+  process that is serving traffic.
+- **JWTs.** Verifiable without a database, and the reason to reject them here:
+  revocation becomes a second list, so the database comes back — with a signing
+  key to manage as well.
+- **An accounts table with users, sessions and a self-service page.** The
+  product charges per audit through x402; there is no user to have an account.
+  A key is a rate-limit identity, and the smallest thing that provides one is
+  a row.
+- **Reusing the `jobs` table's `payment_id` as an identity.** It identifies a
+  payment, not a caller, and a caller may make many.
+
+**What this does not do.** No scopes, no expiry, no `last_used_at`, and no
+rotation prompt. Those are R-81; they are real, and they are not required for
+the limiter to work.
+
+**Related.** `BACKLOG.md` (item closed 2026-10-24), R-81, R-24 (the address
+keying this extends).

@@ -17,6 +17,7 @@ import { loadConfig } from './config.js';
 import { createLogger } from './utils/logger.js';
 import { openDatabase, closeDatabase, runMigrations } from './db/client.js';
 import { JobRepository } from './repositories/job-repository.js';
+import { ApiKeyRepository } from './repositories/api-key-repository.js';
 import { ReportCacheRepository } from './repositories/report-cache-repository.js';
 import { NonceRepository } from './repositories/nonce-repository.js';
 import { JobService } from './services/job-service.js';
@@ -24,7 +25,7 @@ import { CacheService } from './services/cache-service.js';
 import { buildAuditQueue } from './queue/build-queue.js';
 import type { AuditQueue } from './queue/audit-queue.js';
 import { registerSecurity } from './middleware/security.js';
-import { registerRateLimit } from './middleware/rate-limit.js';
+import { registerIdentityAndRateLimit } from './middleware/rate-limit.js';
 import { registerTracing } from './middleware/tracing.js';
 import { initTelemetry } from './telemetry.js';
 import { registerHealthRoutes } from './routes/health.js';
@@ -148,10 +149,6 @@ export async function buildApp(
   await registerSecurity(app, {
     corsOrigins: cfg.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean),
   });
-  await registerRateLimit(app, {
-    perMinute: cfg.RATE_LIMIT_PER_MINUTE,
-    trustedProxyIps: cfg.TRUSTED_PROXY_IPS,
-  });
   // Always registered, no-op until a provider exists: the hooks check
   // `isTelemetryEnabled()` before starting a span.
   registerTracing(app);
@@ -159,6 +156,17 @@ export async function buildApp(
   const db = openDatabase(deps.databaseUrl ?? cfg.DATABASE_URL);
   await runMigrations(db);
   const repo = new JobRepository(db);
+  const apiKeyRepo = new ApiKeyRepository(db);
+
+  // Identity and the limiter in one call: the limiter keys on `request.apiKey`,
+  // so the auth hook has to be registered first, and that ordering lives
+  // inside `registerIdentityAndRateLimit` rather than here. Both need the
+  // database, which is why they moved below `openDatabase`.
+  await registerIdentityAndRateLimit(app, {
+    repo: apiKeyRepo,
+    perMinute: cfg.RATE_LIMIT_PER_MINUTE,
+    trustedProxyIps: cfg.TRUSTED_PROXY_IPS,
+  });
   const cacheRepo = new ReportCacheRepository(db);
   const cacheEnabled = deps.cacheEnabled ?? cfg.REPORT_CACHE_ENABLED;
   const cacheTtlSeconds = deps.cacheTtlSeconds ?? cfg.REPORT_CACHE_TTL_SECONDS;

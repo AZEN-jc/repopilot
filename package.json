@@ -33,6 +33,7 @@
     "typecheck": "pnpm -r typecheck && pnpm typecheck:scripts",
     "typecheck:scripts": "tsc -p tsconfig.json",
     "db:generate": "pnpm --filter @repopilot/api db:generate",
+    "api-key": "tsx scripts/api-key.ts",
     "db:migrate": "pnpm --filter @repopilot/api db:migrate",
     "db:seed": "pnpm --filter @repopilot/api db:seed",
     "env:check": "tsx scripts/env-check.ts",

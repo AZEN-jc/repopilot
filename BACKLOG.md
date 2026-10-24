@@ -254,7 +254,20 @@ Tracked work, in priority order, updated as items are completed.
   is pinned to `1.9.0` (the 2.12 SDK excludes 1.10 from its peer range). Six
   new tests, including one that starts an HTTP server and asserts a real OTLP
   export lands on `/v1/traces`. D-047, R-80.
-- [ ] **Rate-limit per API key** (not just IP) — once key issuance is shipped
+- [x] **Rate-limit per API key** (not just IP). Done 2026-10-24. The item was
+  gated on key issuance, which did not exist — `x-api-key` appeared in the
+  repository only in the log-redaction lists — so this shipped both halves.
+  Issuance is an operator command (`pnpm api-key create|list|revoke`) against
+  the database, not an endpoint: an endpoint that mints credentials would need
+  an admin credential to protect it, which is the thing being issued. Only the
+  SHA-256 is stored; the plaintext is printed once. A key **identifies** a
+  caller and never bypasses payment — it buys a stable rate-limit bucket
+  (`key:<id>`) for a caller behind a shared egress or a rotating address, with
+  an optional per-key limit overriding `RATE_LIMIT_PER_MINUTE`. No key is
+  anonymous as before; a presented key that does not resolve is 401 rather
+  than a silent downgrade. The limiter's allow-list matches the generated key,
+  so a key-bearing request from a trusted address is limited rather than
+  exempt. D-048, R-81.
 - [ ] **Dead-Letter UI** for permanently failed jobs (intentionally
   not in rc.2; `jobs.error` and `jobs.error_code` already capture
   the reason)

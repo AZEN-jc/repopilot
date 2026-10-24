@@ -9,7 +9,7 @@
  * always go through the repository. If you add a column, add it to BOTH
  * schema files and to both migration paths in `migrate.ts`.
  */
-import { pgTable, text, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, timestamp, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const jobs = pgTable(
   'jobs',
@@ -50,3 +50,21 @@ export const jobs = pgTable(
 );
 
 export type PgJobRow = typeof jobs.$inferSelect;
+
+/** Issued API keys. See the SQLite twin in `schema.ts` for the rationale. */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    keyHash: text('key_hash').notNull(),
+    label: text('label').notNull(),
+    rateLimitPerMinute: integer('rate_limit_per_minute'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'string' }),
+  },
+  (t) => ({
+    keyHashIdx: uniqueIndex('uq_api_keys_hash').on(t.keyHash),
+  }),
+);
+
+export type PgApiKeyRow = typeof apiKeys.$inferSelect;

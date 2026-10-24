@@ -140,13 +140,14 @@ Active risks the team is aware of and how they are mitigated.
 - [R-78](#r-78--the-mcp-servers-http-transport-is-unauthenticated-by-design)
 - [R-79](#r-79--the-published-contract-was-a-second-copy-and-nothing-read-it)
 - [R-80](#r-80--a-collector-that-is-down-looks-exactly-like-tracing-that-is-off)
+- [R-81](#r-81--an-api-key-never-expires-and-nothing-says-whether-it-is-still-in-use)
   — Mitigated by default: loopback, and mock payment is refused off it
 
 ---
 
 ## How to read this file
 
-<!-- docs-facts:risk-count -->79<!-- docs-facts:end --> entries (`R-41` is unused;
+<!-- docs-facts:risk-count -->80<!-- docs-facts:end --> entries (`R-41` is unused;
 the numbering jumps). The count is generated — `scripts/docs-facts.ts` renders it
 from the `## R-` headings — because it was written as an English numeral and
 hand-bumped on every addition, which is the one number a reader cannot check at a
@@ -4208,3 +4209,44 @@ one, and it is not what the backlog item asked for.
 pino at `warn`, rate-limited to one line a minute per message, plus a startup
 line naming the exporter and endpoint. Both are cheap; neither is in this
 change.
+
+## R-81 — An API key never expires, and nothing says whether it is still in use
+
+**Severity:** Low — a leaked key is bounded by its rate limit and grants no
+payment bypass, so the blast radius is one caller's bucket.
+**Likelihood:** Moderate over a long deployment: keys issued for a one-off
+integration outlive the integration, and nothing in the product asks about
+them.
+**Status:** Accepted residual — revocation exists and is one command; the
+missing half is knowing which keys to revoke.
+
+**What happens.** `api_keys` has `created_at` and `revoked_at`. It has no
+`expires_at` and no `last_used_at`. So:
+
+- A key stays valid until someone revokes it by id, which requires reading
+  `pnpm api-key list` and recognising the label.
+- There is no way to answer "is this key still being used" without a collector
+  or a log search. An unused key is indistinguishable from a busy one.
+- A key pasted into a public repository is only discovered by the person who
+  notices it.
+
+**Why it is not fixed here.** `last_used_at` is a write on every request, which
+turns a read-only authentication path into a write path — a real cost decision
+that deserves its own change (and a batched or sampled write, not one UPDATE
+per request). Expiry needs a policy for what happens to a caller whose key
+lapses mid-integration, which is a product decision, not a storage one.
+
+**Mitigations that are in place.**
+
+- **Only the hash is stored**, so a database dump is not a set of credentials.
+- **Both headers are redacted from logs.** `x-api-key` and `authorization` were
+  already in the Pino redact lists and in `docs/SECURITY.md`; the key never
+  appears in a request log.
+- **Revocation is immediate.** The lookup filters `revoked_at IS NULL`, so the
+  next request after `pnpm api-key revoke` is a 401 — no cache to wait out.
+- **Labels are mandatory at issue time**, so "which integration is this" has an
+  answer at the moment someone asks.
+
+**What would close it.** `last_used_at` written at most once a minute per key,
+an `expires_at` default of 90 days with an explicit `--no-expiry` for
+long-lived integrations, and `api-key list` showing both.

@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **API keys, and rate limiting that follows them.** `pnpm api-key
+  create|list|revoke` issues, lists and revokes keys against the deployment's
+  database; only the SHA-256 is stored and the plaintext is printed once.
+  Clients send `Authorization: Bearer …` or `X-API-Key: …`. A key identifies a
+  caller and never bypasses payment: what it changes is the rate-limit bucket,
+  which follows the credential instead of the address — the fix for callers
+  behind a shared egress or on a rotating IP. `--limit` gives one key its own
+  budget. No key stays anonymous; an unknown or revoked key is
+  `401 INVALID_API_KEY` rather than a silent downgrade. See D-048 and R-81.
+
 - **OpenTelemetry traces, off by default.** `OTEL_TRACES_EXPORTER=none` (the
   default) registers no provider, so a deployment with no collector pays
   nothing: no socket, no batch timer, and `withSpan` is a no-op call. Set
