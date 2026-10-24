@@ -298,7 +298,7 @@ covers the common ones for people who prefer `make`.
 | `pnpm verify:release`       | End-to-end smoke (env → lint → test → build → API → MCP)  |
 | `pnpm audit:diff`           | Re-run the four reference audits and diff against baseline|
 | `pnpm intelligence:smoke`   | Exercise the four repository-intelligence tools for real  |
-| `pnpm probe:child-wait`     | Probe the shared child-process wait's failure branches    |
+| `pnpm test`                 | Every test, including the `scripts/` gates' own tests     |
 | `pnpm clean`                | Remove `dist`, `node_modules` and `.turbo`                |
 | `make help`                 | `make` aliases for the common targets above               |
 

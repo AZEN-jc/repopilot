@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A test runner for `scripts/`.** The root is not a workspace package, so
+  `pnpm -r test` never looked at the repository's own gates and a `*.test.ts`
+  beside one was a test nothing ran — the fact behind R-31's six months of
+  `tsc` blindness, one directory over. The root now has a `vitest.config.ts`
+  and a `test:scripts` script, `pnpm test` runs both legs into one transcript,
+  and `verify:release` and CI consume that transcript. Two hand-run probes
+  became tests: `scripts/child-wait.test.ts` (five cases, one per branch of the
+  shared wait) and `scripts/mcp-tools.test.ts` (ten answers the `tools/list`
+  check must reject). Fifteen assertions no gate ran before, and the probes'
+  `pnpm probe:*` commands are gone.
+
 - **Failure reasons in the audit history.** `GET
   /api/v1/repositories/:owner/:repo/audits` now carries `errorCode` and
   `error` on each summary (null unless the audit failed), and the web history
@@ -242,8 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `env` rather than defaulting them — the scripts here derive the repository
   root from `__dirname`, and a shared module is the wrong place to bake in an
   assumption about where it was started. See D-044.
-- **`scripts/child-wait-probe.ts` + `pnpm probe:child-wait`.** Five cases, one
-  per branch of the wait, asserting on the *message* rather than on the return
+- **`scripts/child-wait-probe.ts`** (a hand-run probe, since promoted to
+  `scripts/child-wait.test.ts` when the root gained a runner — 2026-10-24). Five
+  cases, one per branch of the wait, asserting on the *message* rather than on
+  the return
   value; exits 1 with the diff, takes ~2 s, needs no network and no server. It
   exists because the shared wait is worth having only for its failure branches,
   and those are the branches no gate exercises: `verify:release` proves the
@@ -1054,7 +1067,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inputSchema` on each. The parse lives in a module rather than in the step
   because a check inside the step can only be exercised by starting a server
   and running thirteen other steps first, which is why the old one never was.
-  `scripts/mcp-tools-probe.ts` (`pnpm probe:mcp-tools`) covers ten answers: a
+  `scripts/mcp-tools-probe.ts` (a hand-run probe, since promoted to
+  `scripts/mcp-tools.test.ts` when the root gained a runner — 2026-10-24) covers
+  ten answers: a
   real reply, an error envelope that mentions "tools", a reply under the wrong
   id, a line truncated by the capture cap, a missing tool, an extra tool, a
   duplicate name, a tool with no description, a tool whose schema is not an

@@ -2507,8 +2507,9 @@ hiding the cause. The cause was sitting in the pipe the script was discarding.
    raise. A bare `15000` in a call site cannot say that, which is how a budget
    that was too short on a cold machine survived as a bare `15000` in three
    places.
-3. **`scripts/child-wait-probe.ts` + `pnpm probe:child-wait`.** Five cases, one
-   per branch, asserting on the *message* and exiting non-zero. The wait is
+3. **`scripts/child-wait-probe.ts`** — five cases, one per branch, asserting on
+   the *message* and exiting non-zero. It was a hand-run probe because `scripts/`
+   had no runner; it is `scripts/child-wait.test.ts` now (2026-10-24). The wait is
    worth having only for its failure branches, and those are the branches no
    gate exercises: `verify:release` proves the success path on every push and
    nothing proved that a dead child still reports its exit code.

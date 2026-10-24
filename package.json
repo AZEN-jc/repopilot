@@ -24,7 +24,8 @@
     "start:api": "pnpm --filter @repopilot/api start:api",
     "start:worker": "pnpm --filter @repopilot/api start:worker",
     "mcp": "pnpm --filter @repopilot/mcp-server start",
-    "test": "pnpm -r test",
+    "test": "pnpm -r test && pnpm test:scripts",
+    "test:scripts": "vitest run",
     "test:core": "pnpm --filter @repopilot/core test",
     "test:okx": "pnpm --filter @repopilot/okx-adapter test",
     "test:mcp": "pnpm --filter @repopilot/mcp-server test",
@@ -46,8 +47,6 @@
     "openapi:build": "tsx scripts/openapi.ts --write",
     "openapi:check": "tsx scripts/openapi.ts --check",
     "test:baseline": "tsx scripts/test-baseline.ts",
-    "probe:child-wait": "tsx scripts/child-wait-probe.ts",
-    "probe:mcp-tools": "tsx scripts/mcp-tools-probe.ts",
     "audit:diff": "tsx scripts/audit-diff.ts",
     "docker:check": "bash scripts/docker-check.sh",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo",
@@ -58,6 +57,7 @@
     "dotenv": "^16.4.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "vitest": "2.1.9",
     "yaml": "^2.9.0"
   }
 }

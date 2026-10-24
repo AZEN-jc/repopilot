@@ -3843,8 +3843,9 @@ description and an object `inputSchema`. `toolsFromResponse`,
 
 The reason the parse is a module and not ten lines in the gate: a check buried
 in a script can only be exercised by starting a server and running thirteen
-other steps first, which is why the old one never was. `scripts/mcp-tools-probe.ts`
-(`pnpm probe:mcp-tools`) feeds it ten answers — a real reply, an error envelope
+other steps first, which is why the old one never was.
+`scripts/mcp-tools-probe.ts` (promoted to `scripts/mcp-tools.test.ts` when the
+root gained a runner, 2026-10-24) feeds it ten answers — a real reply, an error envelope
 that mentions "tools", a reply under the wrong id, a line truncated by the
 capture cap, a missing tool, an extra tool, a duplicate name, a tool with no
 description, a tool whose schema is not an object, and the declared list itself.

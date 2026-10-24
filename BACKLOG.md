@@ -295,26 +295,29 @@ Tracked work, in priority order, updated as items are completed.
   time, a hidden cause costs an afternoon. Measured before and after in
   `CHANGELOG.md`. Two notes for whoever reads this next:
   - the shared wait is worth having only for its failure branches, so they now
-    have a probe (`pnpm probe:child-wait`, five cases, exits non-zero). It is a
-    probe and not a test because there is nowhere to put a test yet — see the
+    have five cases that assert and exit non-zero. They were a hand-run probe
+    because there was nowhere to put a test — see the entry below, which is now
+    closed: the root has a runner and the probe became `scripts/child-wait.test.ts`.
+    The historical sentence continues at
     entry below;
   - the first attempt at reproducing the port clash used an 8 s override and
     reported "alive and silent" for a child that was merely still booting. This
     machine's shell preloads `NODE_OPTIONS` and that costs ~20 s of startup. A
     wrong measurement of a budget looks exactly like a wrong budget.
-- [ ] **`scripts/` has no test runner, so a test next to a script is a test
-  nothing runs.** `pnpm -r test` walks the workspace packages and the root is
-  not one of them — the same fact that made `scripts/` invisible to `tsc` for
-  six months (R-31), one directory over. It is why `scripts/child-wait-probe.ts`
-  is a hand-run probe rather than a `*.test.ts`, and it is the reason the
-  module's failure branches needed a bespoke mechanism at all. Three answers,
-  and they differ in what a change to `scripts/` costs: give the root a `test`
-  script and add a step to `verify:release` (then the test totals and the step
-  list in `PROJECT_STATE.md` both move); move the shared modules into a
-  workspace package so the existing runner picks them up (then `scripts/` stops
-  being a directory with its own rules); or leave it and keep hand-run probes
-  (then every future shared helper has to reinvent this). Recorded rather than
-  picked, because it is a decision about the gate.
+- [x] **`scripts/` had no test runner, so a test next to a script was a test
+  nothing ran.** Done 2026-10-24, by picking the first of the three recorded
+  answers: the root now has its own `test` script (`vitest run` over
+  `scripts/**/*.test.ts`), `pnpm test` runs both legs into one transcript, and
+  `verify:release` step 4 and CI's `Test` step call `pnpm test` rather than
+  `pnpm -r test` — so the totals in `PROJECT_STATE.md` moved, as the item
+  predicted. Two hand-run probes became real tests: `child-wait-probe.ts` →
+  `child-wait.test.ts` (five cases) and `mcp-tools-probe.ts` →
+  `mcp-tools.test.ts` (ten), fifteen assertions that no gate ran before. The
+  second answer was rejected because it would have made `scripts/` a directory
+  with no rules of its own: the gates live next to the code they gate, and a
+  workspace package would separate them. The third was the status quo, and it
+  is the one that cost six months of `tsc` blindness in R-31. Both converted
+  files are mutation-checked — breaking the JSON-RPC id check turns one case red.
 - [x] **Give every entry in `RISKS.md` a `Status:` line.** Done 2026-10-08. The
   count in this item was wrong in a way that mattered: it said "twenty of
   forty-one", and the real state was twenty-one of forty-two carrying a status
@@ -332,7 +335,14 @@ Tracked work, in priority order, updated as items are completed.
 - [ ] Drizzle migration generator for Postgres (currently the SQLite schema
   is hand-written; would be nice to drive it from `drizzle-kit generate`)
 - [ ] Admin UI: job list / job detail (currently only a single-shot form)
-- [ ] i18n in web UI (currently English only)
+- [x] **i18n in web UI.** Already done when it was re-read on 2026-10-24 —
+  the item had gone stale. `apps/web/src/i18n.tsx` carries a full `en` and
+  `zh-CN` dictionary typed against each other (the Chinese one is typed *as*
+  the English dictionary, so a missing key fails the build), an `I18nProvider`
+  that seeds from `localStorage`, and a toggle in `Header.tsx` that also sets
+  `document.documentElement.lang`. There is no third dictionary and no
+  message-format library, which is the right size for one page. Closing as
+  stale rather than done-by-this-change, because nothing here shipped it.
 - [ ] Markdown export of report
 - [ ] PDF export of report
 - [ ] VSCode extension embedding MCP server

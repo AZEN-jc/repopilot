@@ -21,10 +21,10 @@
  * ## What this does instead
  *
  * It consumes a run rather than producing one. `verify:release` step 4 already
- * runs `pnpm -r test` and captures its output, so the numbers are available
+ * runs `pnpm test` and captures its output, so the numbers are available
  * for free at exactly the moment they are real:
  *
- *   - `--check --from <file>` parses a captured `pnpm -r test` transcript and
+ *   - `--check --from <file>` parses a captured `pnpm test` transcript and
  *     fails if the documented total for the current leg disagrees with it.
  *   - `--write --from <file>` rewrites the documented total from the same
  *     transcript.
@@ -305,7 +305,9 @@ function main(): void {
     // `--write` with no transcript runs the suite itself, so the common case is
     // one command. stderr is inherited: a failing suite should be visible while
     // it happens, not only in the parse.
-    output = execSync('pnpm -r test', {
+    // `pnpm test`, not `pnpm -r test`: the root is not a workspace package, so
+    // the recursive form never ran `scripts/`. Both legs land in one transcript.
+    output = execSync('pnpm test', {
       cwd: REPO,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'inherit'],

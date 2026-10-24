@@ -201,14 +201,20 @@ jobs:
         #
         # `set -o pipefail` is load-bearing, and it is the whole reason this is
         # not a one-liner. A pipeline's exit status is the last command's, so
-        # without it `pnpm -r test | tee …` reports `tee`'s 0 and a failing
+        # without it `pnpm test | tee …` reports `tee`'s 0 and a failing
         # suite goes green — a check that cannot fail, which is R-26's shape.
         # GitHub's default shell for `run` is `bash -e`, which does not include
         # pipefail; `shell: bash` does, but it is spelled out here so the
         # dependency sits on the line that needs it.
+        #
+        # `pnpm test` and not `pnpm -r test`: the root is not a workspace
+        # package, so the recursive form never ran `scripts/` — which is why
+        # that directory's tests were hand-run probes for six months. The root
+        # script runs both legs and concatenates, so the transcript below is
+        # the whole suite.
         run: |
           set -o pipefail
-          pnpm -r test | tee "$RUNNER_TEMP/test-output.txt"
+          pnpm test | tee "$RUNNER_TEMP/test-output.txt"
 
       # The totals in `PROJECT_STATE.md` are the one set of numbers in the
       # repository that a generator cannot produce: they are only knowable by

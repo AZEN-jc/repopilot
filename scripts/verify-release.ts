@@ -346,7 +346,9 @@ async function main(): Promise<void> {
 
   // 4. tests
   header('4. test');
-  const testOut = await runStep('test', () => shPrinted('pnpm -r test'));
+  // `pnpm test`, not `pnpm -r test`: the root is not a workspace package, so
+  // the recursive form never ran `scripts/`. The root script runs both legs.
+  const testOut = await runStep('test', () => shPrinted('pnpm test'));
   console.log('  OK');
 
   // 4b. The test totals in PROJECT_STATE.md, checked against the run that just

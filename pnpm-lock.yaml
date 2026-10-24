@@ -25,6 +25,9 @@ importers:
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
+      vitest:
+        specifier: 2.1.9
+        version: 2.1.9(@types/node@22.20.4)(jsdom@25.0.1)
       yaml:
         specifier: ^2.9.0
         version: 2.9.1
