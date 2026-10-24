@@ -239,7 +239,21 @@ Tracked work, in priority order, updated as items are completed.
   The gate is `pnpm openapi:check` (rebuild, byte-compare with the committed
   `docs/openapi.json`) plus a test that every registered route is documented,
   every `$ref` resolves, and no OpenAPI 3.0 keyword survives. D-046, R-79.
-- [ ] **OpenTelemetry traces**
+- [x] **OpenTelemetry traces.** Done 2026-10-24. The item was one line, and
+  the decisions it left out are the whole of the work: traces are **off unless
+  configured** (`OTEL_TRACES_EXPORTER=none` registers no provider at all, so a
+  self-hosted deployment with no collector opens no socket and holds no batch
+  timer); the instrumentation lives in `core` under one tracer name because the
+  pipeline runs in three hosts; and the trace context travels **in the queue
+  payload** rather than in the job row, because it belongs to a delivery and
+  not to a job — a retry hours later should hang under the trace that asked for
+  the audit. One audit is one trace across both processes: HTTP span →
+  `audit.enqueue` → `audit.job` → five pipeline stages → one span per GitHub
+  request. `jobId` is on the span, and the trace id is on the worker's
+  completion and failure log lines, so either finds the other. `@opentelemetry/api`
+  is pinned to `1.9.0` (the 2.12 SDK excludes 1.10 from its peer range). Six
+  new tests, including one that starts an HTTP server and asserts a real OTLP
+  export lands on `/v1/traces`. D-047, R-80.
 - [ ] **Rate-limit per API key** (not just IP) — once key issuance is shipped
 - [ ] **Dead-Letter UI** for permanently failed jobs (intentionally
   not in rc.2; `jobs.error` and `jobs.error_code` already capture

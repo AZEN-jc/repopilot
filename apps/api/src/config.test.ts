@@ -56,6 +56,8 @@ function baseConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     SHUTDOWN_GRACE_PERIOD_MS: 30_000,
     REPORT_CACHE_ENABLED: true,
     REPORT_CACHE_TTL_SECONDS: 3600,
+    OTEL_TRACES_EXPORTER: 'none',
+    OTEL_EXPORTER_OTLP_ENDPOINT: '',
   } satisfies AppConfig;
   // The cast is about the spread, not about the fields: spreading a
   // `Partial<AppConfig>` makes every property optional-with-undefined in the

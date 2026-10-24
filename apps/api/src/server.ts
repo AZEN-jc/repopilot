@@ -25,6 +25,8 @@ import { buildAuditQueue } from './queue/build-queue.js';
 import type { AuditQueue } from './queue/audit-queue.js';
 import { registerSecurity } from './middleware/security.js';
 import { registerRateLimit } from './middleware/rate-limit.js';
+import { registerTracing } from './middleware/tracing.js';
+import { initTelemetry } from './telemetry.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerCapabilitiesRoutes } from './routes/capabilities.js';
 import { registerAuditRoutes } from './routes/audits.js';
@@ -150,6 +152,9 @@ export async function buildApp(
     perMinute: cfg.RATE_LIMIT_PER_MINUTE,
     trustedProxyIps: cfg.TRUSTED_PROXY_IPS,
   });
+  // Always registered, no-op until a provider exists: the hooks check
+  // `isTelemetryEnabled()` before starting a span.
+  registerTracing(app);
 
   const db = openDatabase(deps.databaseUrl ?? cfg.DATABASE_URL);
   await runMigrations(db);
@@ -388,6 +393,11 @@ export function defaultPaymentConfig(): PaymentConfig {
 
 async function main() {
   const cfg = loadConfig();
+  const telemetry = initTelemetry({
+    exporter: cfg.OTEL_TRACES_EXPORTER,
+    endpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
+    serviceName: 'repopilot-api',
+  });
   // `REPOPILOT_API_MODE` controls the process role:
   //   - `combined`: HTTP + queue in one process.
   //   - `http`:     HTTP only; a separate worker process consumes from the
@@ -420,6 +430,9 @@ async function main() {
       built.app.log.info({ sig }, 'received signal; shutting down');
       try {
         await built.shutdown();
+        // Flush before the process goes: a batch processor that is not shut
+        // down drops whatever it buffered.
+        await telemetry.shutdown();
         process.exit(0);
       } catch (err) {
         built.app.log.error({ err: (err as Error).message }, 'shutdown failed');
@@ -450,6 +463,7 @@ async function main() {
     app.log.info({ sig }, 'received signal; shutting down');
     try {
       await app.close();
+      await telemetry.shutdown();
       process.exit(0);
     } catch (err) {
       app.log.error({ err: (err as Error).message }, 'shutdown failed');

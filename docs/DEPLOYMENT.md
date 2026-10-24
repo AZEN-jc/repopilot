@@ -402,3 +402,49 @@ consequence 2).
 - **Do** keep the image's `HEALTHCHECK` enabled; it calls `/health`
   and lets the orchestrator restart the container if it stops
   responding.
+
+## Traces (optional)
+
+RepoPilot emits OpenTelemetry traces. Nothing is exported until you ask for
+it: `OTEL_TRACES_EXPORTER=none` (the default) registers no provider, so the
+API is on the OpenTelemetry no-op implementation and no socket or batch timer
+is created.
+
+```bash
+OTEL_TRACES_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # base URL; /v1/traces is appended
+```
+
+The endpoint is a **base** URL. `initTelemetry` appends `/v1/traces`; a full
+signal URL is accepted unchanged. `OTEL_TRACES_EXPORTER=otlp` with an empty
+endpoint is a startup error rather than a silent fallback to
+`localhost:4318` — a typo should not look like a working configuration.
+
+One audit is one trace, across both processes:
+
+```
+POST /api/v1/audits/{jobId}        http.server, service.name=repopilot-api
+└─ audit.enqueue                   repopilot.job_id
+   └─ audit.job                    service.name=repopilot-worker
+      ├─ audit.pipeline            repo_url, mode, target
+      │  ├─ audit.metadata
+      │  ├─ audit.tree
+      │  ├─ audit.contents         files.read, degraded
+      │  ├─ audit.history          history.scanned
+      │  └─ audit.report
+      └─ github.*                  one span per GitHub request
+```
+
+The hop between the two processes is the queue payload: the enqueue span
+injects a W3C `traceparent`, and the driver extracts it around `runOne`. The
+`jobId` is on the span as an attribute, so a trace can be found from a job id
+and a job id from a trace. Retries appear as separate `audit.job` spans under
+the trace that asked for the audit.
+
+Traces are sampled at 100% when enabled. There is no `OTEL_TRACES_SAMPLER`
+support yet — for a deployment running many audits, point the collector at a
+sampling pipeline rather than expecting the SDK to thin them out.
+
+`OTEL_TRACES_EXPORTER=console` writes spans to stdout. It is for watching a
+single request locally, not for production: the batch processor would emit
+several hundred lines per audit at `info` volume.

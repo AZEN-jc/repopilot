@@ -6,6 +6,7 @@
  * anything.
  */
 import { Octokit } from '@octokit/rest';
+import { withSpan } from '../telemetry.js';
 
 export interface RepoMetadata {
   owner: string;
@@ -42,7 +43,11 @@ export class MetadataAnalyzer {
   }
 
   async fetch(owner: string, repo: string): Promise<RepoMetadata> {
-    const { data } = await this.octokit.repos.get({ owner, repo });
+    const { data } = await withSpan(
+      'github.repo_metadata',
+      { 'repopilot.owner': owner, 'repopilot.repo': repo },
+      () => this.octokit.repos.get({ owner, repo }),
+    );
     // Open issues count from `get` includes PRs in some older versions; we re-query
     // issues & pulls separately to be safe.
     let openIssues = 0;
@@ -103,7 +108,11 @@ export class MetadataAnalyzer {
    */
   async getDefaultBranch(owner: string, repo: string): Promise<string | null> {
     try {
-      const { data } = await this.octokit.repos.get({ owner, repo });
+      const { data } = await withSpan(
+        'github.default_branch',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo },
+        () => this.octokit.repos.get({ owner, repo }),
+      );
       return typeof data?.default_branch === 'string' && data.default_branch ? data.default_branch : null;
     } catch {
       return null;
@@ -120,11 +129,16 @@ export class MetadataAnalyzer {
    */
   async getHeadSha(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
-      const { data } = await this.octokit.git.getRef({
-        owner,
-        repo,
-        ref: `heads/${branch}`,
-      });
+      const { data } = await withSpan(
+        'github.get_ref',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo, 'repopilot.branch': branch },
+        () =>
+          this.octokit.git.getRef({
+            owner,
+            repo,
+            ref: `heads/${branch}`,
+          }),
+      );
       return typeof data?.object?.sha === 'string' ? data.object.sha : null;
     } catch {
       return null;

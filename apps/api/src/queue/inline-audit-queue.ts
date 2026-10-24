@@ -27,6 +27,7 @@
  *   - The queue can never be silently selected in production: the
  *     config validator refuses `NODE_ENV=production + AUDIT_QUEUE_DRIVER=inline`.
  */
+import { runInTraceContext } from '@repopilot/core';
 import type {
   AuditQueue,
   AuditQueueJob,
@@ -77,7 +78,7 @@ export class InlineAuditQueue implements AuditQueue {
   private accepting = true;
   private started = false;
   /** Pending jobs waiting for a free worker slot. */
-  private readonly pending: string[] = [];
+  private readonly pending: AuditQueueJob[] = [];
   private activeWorkers = 0;
 
   constructor(deps: InlineAuditQueueDeps) {
@@ -101,11 +102,13 @@ export class InlineAuditQueue implements AuditQueue {
     if (!this.accepting) {
       throw new Error('InlineAuditQueue is shutting down; not accepting new jobs');
     }
-    if (this.inFlight.has(input.jobId) || this.pending.includes(input.jobId)) {
+    if (this.inFlight.has(input.jobId) || this.pending.some((j) => j.jobId === input.jobId)) {
       return { jobId: input.jobId, acceptedAt: new Date().toISOString(), accepted: false };
     }
     this.inFlight.add(input.jobId);
-    this.pending.push(input.jobId);
+    // The whole payload, not just the id: the trace context the enqueuing
+    // request captured has to survive the wait for a worker slot.
+    this.pending.push(input);
     void this.dispatch();
     return { jobId: input.jobId, acceptedAt: new Date().toISOString(), accepted: true };
   }
@@ -191,10 +194,10 @@ export class InlineAuditQueue implements AuditQueue {
 
   private dispatch(): void {
     while (this.activeWorkers < this.concurrency && this.pending.length > 0) {
-      const jobId = this.pending.shift();
-      if (jobId === undefined) break;
+      const job = this.pending.shift();
+      if (job === undefined) break;
       this.activeWorkers += 1;
-      const p = this.runJob(jobId)
+      const p = this.runJob(job)
         // eslint-disable-next-line no-floating-promise
         .catch((err: unknown) => {
           // `runJob` consumes the failures it knows how to consume, so reaching
@@ -202,7 +205,7 @@ export class InlineAuditQueue implements AuditQueue {
           // the loop. Kept as a net so that becomes a log line rather than an
           // unhandled rejection.
           this.log.warn(
-            { jobId, err: (err as Error)?.message ?? 'unknown' },
+            { jobId: job.jobId, err: (err as Error)?.message ?? 'unknown' },
             'audit job threw past InlineAuditQueue',
           );
         })
@@ -236,12 +239,16 @@ export class InlineAuditQueue implements AuditQueue {
    * deliberate: only the row knows how many attempts it has had, and the inline
    * driver has no other way to find out.
    */
-  private async runJob(jobId: string): Promise<void> {
+  private async runJob(job: AuditQueueJob): Promise<void> {
+    const jobId = job.jobId;
     try {
       let lastErr: unknown;
       for (let attempt = 0; attempt <= this.retryLimit; attempt++) {
         try {
-          await this.runOne(jobId);
+          // Each attempt runs as a child of the enqueuing request's trace, so
+          // a retry appears under the trace that asked for the audit rather
+          // than as an orphan.
+          await runInTraceContext(job, () => this.runOne(jobId));
           return;
         } catch (err) {
           lastErr = err;

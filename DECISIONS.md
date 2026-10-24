@@ -82,6 +82,7 @@ Architecture Decision Records (ADR-style, lightweight).
   — A wait that cannot say which way it failed is not a diagnostic
 - [D-045](#d-045--a-transport-that-adds-a-socket-adds-a-payment-decision)
 - [D-046](#d-046--generate-the-shapes-hand-write-the-sentences)
+- [D-047](#d-047--traces-are-off-until-someone-asks-and-the-queue-carries-the-context)
   — A transport that adds a socket adds a payment decision
 
 ---
@@ -2703,3 +2704,85 @@ shape nothing emits.
 
 **Related.** `BACKLOG.md` (the item, closed 2026-10-22), R-79, D-031 (the
 `docs-facts` markers, same problem in prose).
+
+## D-047 — Traces are off until someone asks, and the queue carries the context
+
+`BACKLOG.md` carried one line: "OpenTelemetry traces". No collector in the
+repository, no dependency installed, no recorded decision. The line leaves
+three questions open, and they are what this entry answers.
+
+**1. No provider unless configured.** `OTEL_TRACES_EXPORTER=none` is the
+default, and in that state `initTelemetry` registers nothing. The process stays
+on the OpenTelemetry no-op implementation: `withSpan` allocates an object and
+returns, no socket is opened, no batch timer is started. The normal deployment
+here is self-hosted with no collector, and the alternative — registering a
+provider that exports to `localhost:4318` — would turn every audit into a
+failed HTTP request every five seconds. That failure is invisible, too: the
+batch processor reports to `diag`, which is a no-op until someone installs a
+logger, so a down collector and a switched-off feature look identical.
+
+**2. The instrumentation lives in `core`, under one tracer name.** The
+pipeline, the fetcher and the metadata analyzer are all in `core`, and `core`
+runs inside three hosts: the API, the worker, and the MCP server. Putting the
+helpers in `apps/api` would have meant either a second copy in the MCP server
+or an instrumented pipeline that is only instrumented when called from the
+API. One tracer name (`repopilot`) rather than one per package: splitting it
+would make "show me every span of one audit" require knowing which package
+emitted which span.
+
+**3. The trace context travels in the queue payload, not in the job row.** A
+trace context is a property of a *delivery*, not of a job: a job re-delivered
+hours later belongs to the trace of the retry, not to the trace of the
+original POST. So `AuditQueueJob` carries `traceparent`/`tracestate`, the
+inline driver keeps the payload in its pending list instead of just the id,
+and both drivers call `runInTraceContext(payload, () => runOne(jobId))`.
+pg-boss persists the payload with the job, so the fields survive a restart
+with no schema change. The job row stays what it was: the durable state.
+
+Two smaller decisions inside the same change:
+
+- **HTTP spans are renamed in `onResponse`.** Fastify resolves the route after
+  `onRequest`, so at start time the honest name is the raw URL. Renaming to
+  `${method} ${routeTemplate}` turns `POST /api/v1/audits/8f2c…` into
+  `POST /api/v1/audits/{jobId}`, which is the name that aggregates. The span is
+  started in `onRequest` and made active with `context.with(..., done)`; that
+  is what makes the enqueue span its child rather than a second root.
+- **Success leaves the span status UNSET.** `withSpan` sets `ERROR` on a throw
+  and nothing on success. The worker turns a terminal failure into a written
+  row and returns normally, so a blanket `OK` would overwrite the `ERROR` it
+  sets for exactly the failure an operator wants to find.
+
+**Versions.** `@opentelemetry/api` is pinned to `1.9.0`, not `^1.9.0`: the
+2.12 line of the SDK declares a peer range of `>=1.0.0 <1.10.0`, so a caret
+range resolves to `1.10.0` and `pnpm peers check` fails. The exporter is
+`0.223.0`, which depends on `@opentelemetry/sdk-trace@2.12.0` — the same line
+as the provider. Two lines that look compatible and are not is the failure
+this pin exists to prevent.
+
+**Alternatives rejected.**
+
+- **Auto-instrumentations (`@opentelemetry/auto-instrumentations-node`).**
+  One import, and it patches `http`, `dns`, `net` and `pg` at runtime. That is
+  a large dependency tree, a monkey-patch of Node internals, and a second
+  definition of which calls matter — most of which would be `dns.lookup` noise
+  in a service whose only outbound calls are five Octokit methods.
+- **Log correlation only.** `jobId` is already in every worker log line and
+  would let an operator join the two processes by hand. It does not give the
+  timing breakdown (which stage of the audit), and it cannot express "this
+  request caused that job" without reading two files.
+- **SDK as an optional peer.** Instrumentation that is compiled in but only
+  functional after an operator installs a package is dead code in every
+  deployment that does not, which is all of them. The switch is a config
+  value; the code is either there or it is not.
+- **A trace per process, joined by `jobId` in the span attributes.** That is
+  what the propagation work avoids. Two traces with the same attribute can be
+  found side by side; they cannot be read as one waterfall, which is the only
+  reason to have traces.
+
+**What this does not do.** No metrics, no log-to-trace linking in the HTTP
+request logs (Fastify's serializer is untouched), and no sampling
+configuration — 100% when enabled. Those are separate decisions, and the
+collector can sample.
+
+**Related.** `BACKLOG.md` (item closed 2026-10-24), R-80, D-046 (the same
+"generate what is derivable" instinct applied to the contract).

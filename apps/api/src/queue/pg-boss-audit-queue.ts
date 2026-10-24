@@ -37,6 +37,7 @@
  * that cannot install pg-boss.
  */
 import { PgBoss } from 'pg-boss';
+import { runInTraceContext, type TraceCarrier } from '@repopilot/core';
 import type {
   AuditQueue,
   AuditQueueJob,
@@ -129,17 +130,19 @@ export class PgBossAuditQueue implements AuditQueue {
     // queue (so it can enqueue) but does NOT call `boss.work()` —
     // the dedicated worker process is the sole consumer.
     if (this.deps.consume !== false) {
-      await this.boss.work<{ jobId: string }>(
+      await this.boss.work<{ jobId: string } & TraceCarrier>(
         this.queueName,
         { batchSize: 1 },
-        async (jobs: Array<{ id: string; data?: { jobId?: string } }>) => {
+        async (jobs: Array<{ id: string; data?: { jobId?: string } & TraceCarrier }>) => {
           for (const job of jobs) {
             const jobId = job.data?.jobId;
             if (!jobId) {
               this.log.warn({ jobId: job.id }, 'pg-boss job missing jobId payload; failing');
               throw new Error('pg-boss job missing jobId');
             }
-            await this.deps.runOne(jobId);
+            // The payload is the only thing that crosses the process
+            // boundary; without this the worker's spans are a second trace.
+            await runInTraceContext(job.data, () => this.deps.runOne(jobId));
           }
         },
       );
@@ -164,7 +167,11 @@ export class PgBossAuditQueue implements AuditQueue {
     // at the jobId level (the queue-level dedup would over-constrain
     // retries). Storing a separate column in pgboss's job table is
     // not necessary; our jobs table is the source of truth.
-    const pgJobId = await this.boss.send(this.queueName, { jobId: input.jobId });
+    const pgJobId = await this.boss.send(this.queueName, {
+      jobId: input.jobId,
+      ...(input.traceparent ? { traceparent: input.traceparent } : {}),
+      ...(input.tracestate ? { tracestate: input.tracestate } : {}),
+    });
     return {
       jobId: input.jobId,
       acceptedAt: new Date().toISOString(),

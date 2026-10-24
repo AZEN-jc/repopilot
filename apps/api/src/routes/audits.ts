@@ -37,7 +37,9 @@ import {
   CreateAuditInputSchema,
   ReportSchema,
   MetadataAnalyzer,
+  injectTraceContext,
   parseRepoUrl,
+  withSpan,
   type CreateAuditInput,
   type Report,
 } from '@repopilot/core';
@@ -451,7 +453,14 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRoutesDeps)
     //     nowhere else.
     let enqueueResult;
     try {
-      enqueueResult = await deps.queue.enqueue({ jobId: job.jobId });
+      // The trace context is captured here, inside the request's span, and
+      // travels in the payload: by the time the worker picks the job up this
+      // request has answered 202 and its context is gone.
+      enqueueResult = await withSpan(
+        'audit.enqueue',
+        { 'repopilot.job_id': job.jobId },
+        () => deps.queue.enqueue({ jobId: job.jobId, ...injectTraceContext() }),
+      );
     } catch (err) {
       deps.log?.warn(
         { jobId: job.jobId, err: (err as Error)?.message ?? 'unknown' },

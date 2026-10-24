@@ -14,6 +14,7 @@ import { Octokit } from '@octokit/rest';
 import type { FileEntry } from './files.js';
 import { classifyFile } from './files.js';
 import { extractTarball, decodeText } from './tarball.js';
+import { withSpan } from '../telemetry.js';
 
 /**
  * Caps that only the tarball path needs (R-17).
@@ -101,12 +102,17 @@ export class GitHubFetcher {
 
   async fetchTree(owner: string, repo: string, ref: string): Promise<{ entries: FileEntry[]; truncated: boolean }> {
     try {
-      const { data } = await this.octokit.git.getTree({
-        owner,
-        repo,
-        tree_sha: ref,
-        recursive: 'true',
-      });
+      const { data } = await withSpan(
+        'github.get_tree',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo, 'repopilot.ref': ref },
+        () =>
+          this.octokit.git.getTree({
+            owner,
+            repo,
+            tree_sha: ref,
+            recursive: 'true',
+          }),
+      );
       const entries: FileEntry[] = [];
       let truncated = data.truncated;
       for (const item of data.tree) {
@@ -137,43 +143,54 @@ export class GitHubFetcher {
     candidates: FileEntry[],
     opts: { maxFileBytes: number; maxTotalBytes: number; log?: FetchOptions['log'] }
   ): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    let total = 0;
-    for (const entry of candidates) {
-      if (total + entry.size > opts.maxTotalBytes) {
-        opts.log?.('skip due to total bytes cap', { path: entry.path });
-        continue;
-      }
-      if (entry.size > opts.maxFileBytes) {
-        opts.log?.('skip large file', { path: entry.path, size: entry.size });
-        continue;
-      }
-      const cls = classifyFile(entry.path, entry.size);
-      if (cls.kind !== 'text') {
-        opts.log?.('skip non-text', { path: entry.path, kind: cls.kind });
-        continue;
-      }
-      try {
-        const { data } = await this.octokit.repos.getContent({
-          owner,
-          repo,
-          path: entry.path,
-          ref,
-        });
-        if (Array.isArray(data) || data.type !== 'file') continue;
-        const content = (data as { content?: string; encoding?: string }).content;
-        if (typeof content !== 'string') continue;
-        const encoding = (data as { encoding?: string }).encoding ?? 'base64';
-        if (encoding !== 'base64') continue;
-        const buf = Buffer.from(content, 'base64');
-        if (buf.length === 0) continue;
-        out.set(entry.path, decodeText(buf));
-        total += buf.length;
-      } catch (e) {
-        opts.log?.('skip file (fetch error)', { path: entry.path, error: (e as Error).message });
-      }
-    }
-    return out;
+    return withSpan(
+      'github.get_contents',
+      {
+        'repopilot.owner': owner,
+        'repopilot.repo': repo,
+        'repopilot.files.requested': candidates.length,
+      },
+      async (span) => {
+        const out = new Map<string, string>();
+        let total = 0;
+        for (const entry of candidates) {
+          if (total + entry.size > opts.maxTotalBytes) {
+            opts.log?.('skip due to total bytes cap', { path: entry.path });
+            continue;
+          }
+          if (entry.size > opts.maxFileBytes) {
+            opts.log?.('skip large file', { path: entry.path, size: entry.size });
+            continue;
+          }
+          const cls = classifyFile(entry.path, entry.size);
+          if (cls.kind !== 'text') {
+            opts.log?.('skip non-text', { path: entry.path, kind: cls.kind });
+            continue;
+          }
+          try {
+            const { data } = await this.octokit.repos.getContent({
+              owner,
+              repo,
+              path: entry.path,
+              ref,
+            });
+            if (Array.isArray(data) || data.type !== 'file') continue;
+            const content = (data as { content?: string; encoding?: string }).content;
+            if (typeof content !== 'string') continue;
+            const encoding = (data as { encoding?: string }).encoding ?? 'base64';
+            if (encoding !== 'base64') continue;
+            const buf = Buffer.from(content, 'base64');
+            if (buf.length === 0) continue;
+            out.set(entry.path, decodeText(buf));
+            total += buf.length;
+          } catch (e) {
+            opts.log?.('skip file (fetch error)', { path: entry.path, error: (e as Error).message });
+          }
+        }
+        span.setAttribute('repopilot.files.read', out.size);
+        return out;
+      },
+    );
   }
 
   /**
@@ -262,7 +279,11 @@ export class GitHubFetcher {
   async downloadTarball(owner: string, repo: string, ref: string): Promise<Buffer> {
     let raw: unknown;
     try {
-      const res = await this.octokit.repos.downloadTarballArchive({ owner, repo, ref });
+      const res = await withSpan(
+        'github.download_tarball',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo, 'repopilot.ref': ref },
+        () => this.octokit.repos.downloadTarballArchive({ owner, repo, ref }),
+      );
       raw = res.data;
     } catch (e) {
       throw this.toFetchError(e, `Failed to download the archive for ${owner}/${repo}@${ref}`);
@@ -301,12 +322,17 @@ export class GitHubFetcher {
   ): Promise<CommitRef[]> {
     const perPage = Math.min(Math.max(opts.limit, 1), 100);
     try {
-      const { data } = await this.octokit.repos.listCommits({
-        owner,
-        repo,
-        per_page: perPage,
-        ...(opts.since ? { since: opts.since } : {}),
-      });
+      const { data } = await withSpan(
+        'github.list_commits',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo, 'repopilot.limit': perPage },
+        () =>
+          this.octokit.repos.listCommits({
+            owner,
+            repo,
+            per_page: perPage,
+            ...(opts.since ? { since: opts.since } : {}),
+          }),
+      );
       return data.map((c) => ({
         sha: c.sha,
         subject: (c.commit.message ?? '').split('\n')[0] ?? '',
@@ -331,7 +357,11 @@ export class GitHubFetcher {
     sha: string
   ): Promise<CommitFileChange[]> {
     try {
-      const { data } = await this.octokit.repos.getCommit({ owner, repo, ref: sha });
+      const { data } = await withSpan(
+        'github.get_commit',
+        { 'repopilot.owner': owner, 'repopilot.repo': repo, 'repopilot.sha': sha },
+        () => this.octokit.repos.getCommit({ owner, repo, ref: sha }),
+      );
       const files = (data as { files?: Array<Record<string, unknown>> }).files ?? [];
       return files.map((f) => ({
         filename: String(f['filename'] ?? ''),

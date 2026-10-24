@@ -40,9 +40,12 @@ import {
   REPORT_VERSION,
   ReportSchema,
   parseRepoUrl,
+  currentTraceId,
+  withSpan,
   type AuditJob,
   type Report,
 } from '@repopilot/core';
+import { SpanStatusCode, type Span } from '@opentelemetry/api';
 import type { CacheService } from './cache-service.js';
 import type { JobRepository } from '../repositories/job-repository.js';
 
@@ -175,18 +178,29 @@ export class AuditWorker {
    * `updated: false` and we treat the job as already taken.
    */
   async runOnce(jobId: string): Promise<void> {
+    // One span per attempt, not per job: a retry is a second attempt at the
+    // same row, and collapsing them would hide which one failed.
+    return withSpan('audit.job', { 'repopilot.job_id': jobId }, (span) =>
+      this.runAttempt(jobId, span),
+    );
+  }
+
+  private async runAttempt(jobId: string, span: Span): Promise<void> {
     const log = this.deps.log ?? { info: () => undefined, warn: () => undefined, error: () => undefined };
     let job = await this.deps.repo.findById(jobId);
     if (!job) {
       log.warn({ jobId }, 'audit job not found; skipping');
+      span.setAttribute('repopilot.job.skipped', 'not_found');
       return;
     }
     if (job.status === 'completed') {
       log.info({ jobId }, 'audit job already completed; idempotent skip');
+      span.setAttribute('repopilot.job.skipped', 'completed');
       return;
     }
     if (job.status === 'failed') {
       log.info({ jobId }, 'audit job already failed; not re-running');
+      span.setAttribute('repopilot.job.skipped', 'failed');
       return;
     }
     if (job.status === 'processing') {
@@ -204,9 +218,11 @@ export class AuditWorker {
       const ageMs = Number.isFinite(startedAt) ? Date.now() - startedAt : Number.POSITIVE_INFINITY;
       if (ageMs <= this.deps.staleProcessingMs) {
         log.warn({ jobId }, 'audit job already processing elsewhere; skipping');
+        span.setAttribute('repopilot.job.skipped', 'processing');
         return;
       }
       log.warn({ jobId, ageMs }, 'audit job stuck in processing; reclaiming');
+      span.addEvent('job.reclaimed', { ageMs });
       const reclaimed = await this.deps.repo.update(
         jobId,
         {
@@ -245,11 +261,15 @@ export class AuditWorker {
       'queued',
     );
     if (!take.updated) {
+      span.setAttribute('repopilot.job.claim_lost', true);
       // Lost the race to another worker. Reload and decide.
       const fresh = await this.deps.repo.findById(jobId);
       if (fresh?.status === 'completed' || fresh?.status === 'failed') return;
       throw new AuditError('INTERNAL', `could not claim job ${jobId} for processing`, true);
     }
+
+    span.setAttribute('repopilot.job.attempt', attempts);
+    span.addEvent('job.processing', { attempts });
 
     try {
       const { report, cache } = await withDeadline(
@@ -283,12 +303,20 @@ export class AuditWorker {
         // Name the state we found, so the log says whether this was a
         // double-write or a race with a terminal state.
         const current = await this.deps.repo.findById(jobId);
+        span.addEvent('job.report_dropped', {
+          rowStatus: current?.status ?? '(missing)',
+        });
         log.warn(
           { jobId, attempts, rowStatus: current?.status ?? '(missing)' },
           'audit job completed by a worker that no longer held it; report dropped',
         );
       } else {
-        log.info({ jobId, hit: cache.hit, keyVersion: cache.keyVersion }, 'audit job completed');
+        span.setAttribute('repopilot.cache.hit', cache.hit);
+        span.addEvent('job.completed', { cacheHit: cache.hit });
+        log.info(
+          { jobId, hit: cache.hit, keyVersion: cache.keyVersion, traceId: currentTraceId() },
+          'audit job completed',
+        );
       }
     } catch (err) {
       const auditErr = this.classify(err);
@@ -297,6 +325,15 @@ export class AuditWorker {
       // nothing else in the system moves a job out of a non-terminal state, so
       // leaving one there is a job a client polls forever.
       const terminal = !auditErr.retryable || attempts >= maxAttempts;
+      span.addEvent('job.failed', {
+        code: auditErr.code,
+        terminal,
+        attempts,
+        maxAttempts,
+      });
+      if (terminal) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: auditErr.code });
+      }
       log.warn(
         {
           jobId,
@@ -305,6 +342,7 @@ export class AuditWorker {
           retryable: auditErr.retryable,
           attempts,
           maxAttempts,
+          traceId: currentTraceId(),
         },
         terminal ? 'audit job failed' : 'audit job failed; another attempt will be made',
       );

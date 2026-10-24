@@ -139,13 +139,14 @@ Active risks the team is aware of and how they are mitigated.
   — Accepted residual: the sweep needs a threshold the row cannot justify
 - [R-78](#r-78--the-mcp-servers-http-transport-is-unauthenticated-by-design)
 - [R-79](#r-79--the-published-contract-was-a-second-copy-and-nothing-read-it)
+- [R-80](#r-80--a-collector-that-is-down-looks-exactly-like-tracing-that-is-off)
   — Mitigated by default: loopback, and mock payment is refused off it
 
 ---
 
 ## How to read this file
 
-<!-- docs-facts:risk-count -->78<!-- docs-facts:end --> entries (`R-41` is unused;
+<!-- docs-facts:risk-count -->79<!-- docs-facts:end --> entries (`R-41` is unused;
 the numbering jumps). The count is generated — `scripts/docs-facts.ts` renders it
 from the `## R-` headings — because it was written as an English numeral and
 hand-bumped on every addition, which is the one number a reader cannot check at a
@@ -4154,3 +4155,56 @@ are read from the schema that emits them.
 **Related.** D-046 (the decision and the rejected alternatives), R-31 (the
 exemption list that would have been needed without `routes/meta.ts`), R-37 (the
 `mode` default), D-031 (the same fix for prose facts).
+
+## R-80 — A collector that is down looks exactly like tracing that is off
+
+**Severity:** Low — no audit fails, no client is affected, and the service keeps
+serving.
+**Likelihood:** Certain in one direction: a deployment that turns tracing on
+and points it at a collector which is later moved, renamed, or firewalled
+produces no spans and no error line.
+**Status:** Accepted residual — the mitigations below are real, and the silent
+case is not closed: the SDK's export path has no hook that reaches this
+process's logger.
+
+**What happens.** `BatchSpanProcessor` exports on a timer and, when the export
+fails, reports the failure through `@opentelemetry/api`'s `diag` channel. That
+channel is a no-op until a logger is installed with `diag.setLogger`, which
+this service does not do. So the observable states are:
+
+| Configuration | Collector | What the operator sees |
+| --- | --- | --- |
+| `none` | — | nothing, by design |
+| `otlp` | up | spans in the collector |
+| `otlp` | down / wrong URL / TLS failure | nothing, and no log line |
+
+The third row is the risk. It is the same shape as R-79's "nothing read the
+document": a feature that is configured, believed to be working, and silently
+not.
+
+**Why it is not fixed here.** Installing a `diag` logger means choosing what
+its messages look like in pino (the SDK emits unstructured strings at four
+levels, including one per dropped span), and the batch processor's retry
+behaviour means a down collector would produce a warning every five seconds
+for as long as it stays down. That is a logging-policy decision, not a tracing
+one, and it is not what the backlog item asked for.
+
+**Mitigations that are in place.**
+
+- **The endpoint is validated at startup.** `OTEL_TRACES_EXPORTER=otlp` with
+  an empty endpoint is a config error, not a fallback to `localhost:4318` —
+  the exporter's own default, which would make a typo look like a working
+  configuration.
+- **The signal path is appended, and tested on a socket.**
+  `telemetry.otlp.test.ts` starts an HTTP server, points a real
+  `OTLPTraceExporter` at it, and asserts the POST lands on `/v1/traces` with
+  the span in the body. A wrong URL shape fails a test rather than an
+  investigation.
+- **The collector is the place to watch.** Any collector worth running
+  exposes "spans received"; a deployment that cares about traces should alert
+  on that counter being zero while traffic is non-zero.
+
+**What would close it.** A `diag` adapter that routes SDK diagnostics through
+pino at `warn`, rate-limited to one line a minute per message, plus a startup
+line naming the exporter and endpoint. Both are cheap; neither is in this
+change.

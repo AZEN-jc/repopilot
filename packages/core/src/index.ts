@@ -12,6 +12,7 @@ export * from './report/index.js';
 export * from './security/index.js';
 export * from './git/index.js';
 export * from './pipeline.js';
+export * from './telemetry.js';
 export * from './free-check.js';
 export * from './findings/enrich.js';
 export * from './findings/fingerprint.js';

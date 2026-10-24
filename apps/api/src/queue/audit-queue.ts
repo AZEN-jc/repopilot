@@ -22,9 +22,21 @@
  * HTTP response (no awaits of arbitrary network calls) — the route
  * returns 202 as soon as `enqueue` resolves.
  */
+import type { TraceCarrier } from '@repopilot/core';
+
 export type AuditQueueDriver = 'inline' | 'pg-boss';
 
-export interface AuditQueueJob {
+/**
+ * What the queue carries. `jobId` is the work; the trace fields are the
+ * context of the request that asked for it.
+ *
+ * The trace context rides in the payload rather than in the job row because
+ * it is a property of *this delivery*, not of the job: a job re-delivered
+ * hours later belongs to the trace of the retry, not the trace of the
+ * original POST. pg-boss persists the payload with the job, so the fields
+ * survive a restart without a schema change.
+ */
+export interface AuditQueueJob extends TraceCarrier {
   jobId: string;
 }
 

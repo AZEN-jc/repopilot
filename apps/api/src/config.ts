@@ -106,6 +106,37 @@ export const ConfigSchema = z.object({
   // Graceful shutdown window: how long the server waits for in-flight
   // jobs to drain before forcing the queue / DB to close.
   SHUTDOWN_GRACE_PERIOD_MS: z.coerce.number().int().positive().default(30_000),
+
+  // Traces.
+  //
+  // `none` registers no provider at all: the OpenTelemetry API stays on its
+  // no-op implementation and `withSpan` returns without recording. That is
+  // the default because a self-hosted deployment without a collector should
+  // not open a socket or hold a batch timer for spans nobody reads.
+  //
+  // `otlp` needs an endpoint — checked below, because the exporter's own
+  // fallback is `localhost:4318`, and a typo'd endpoint would then look like
+  // a working configuration that silently sends nowhere.
+  OTEL_TRACES_EXPORTER: z.enum(['none', 'otlp', 'console']).default('none'),
+  // Base URL only; `/v1/traces` is appended by `initTelemetry`.
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
+}).superRefine((cfg, ctx) => {
+  const endpoint = cfg.OTEL_EXPORTER_OTLP_ENDPOINT.trim();
+  if (cfg.OTEL_TRACES_EXPORTER === 'otlp' && endpoint === '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OTEL_EXPORTER_OTLP_ENDPOINT'],
+      message:
+        'OTEL_TRACES_EXPORTER=otlp requires OTEL_EXPORTER_OTLP_ENDPOINT (for example http://localhost:4318).',
+    });
+  }
+  if (endpoint !== '' && !/^https?:\/\//.test(endpoint)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OTEL_EXPORTER_OTLP_ENDPOINT'],
+      message: 'OTEL_EXPORTER_OTLP_ENDPOINT must start with http:// or https://.',
+    });
+  }
 });
 
 // ----------------------------------------------------------------------------

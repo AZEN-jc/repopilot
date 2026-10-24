@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenTelemetry traces, off by default.** `OTEL_TRACES_EXPORTER=none` (the
+  default) registers no provider, so a deployment with no collector pays
+  nothing: no socket, no batch timer, and `withSpan` is a no-op call. Set
+  `OTEL_TRACES_EXPORTER=otlp` with `OTEL_EXPORTER_OTLP_ENDPOINT` and one audit
+  becomes one trace across both processes — the HTTP span, `audit.enqueue`, the
+  worker's `audit.job`, the five pipeline stages, and one span per GitHub
+  request. The hop is carried in the queue payload as a W3C `traceparent`, so a
+  retry hours later hangs under the trace that asked for the audit rather than
+  starting a second one. `jobId` is on the span and the trace id is on the
+  worker's completion and failure log lines, so either finds the other. The
+  endpoint is validated at startup and `/v1/traces` is appended per the
+  specification; `console` exists for watching a single request locally.
+  `@opentelemetry/api` is pinned to `1.9.0` because the 2.12 SDK's peer range
+  excludes `1.10`. See D-047 and R-80.
+
 - **A generated, gate-checked OpenAPI document, published as
   `docs/openapi.json`.** `components.schemas` was a hand-written JSON literal
   beside the routes, and nothing tested it — so it drifted twice in ways a

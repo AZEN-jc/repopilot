@@ -30,6 +30,7 @@ import { ReportCacheRepository } from './repositories/report-cache-repository.js
 import { CacheService } from './services/cache-service.js';
 import { buildAuditQueue } from './queue/build-queue.js';
 import type { AuditQueue } from './queue/audit-queue.js';
+import { initTelemetry } from './telemetry.js';
 
 export interface WorkerHandle {
   queue: AuditQueue;
@@ -127,6 +128,12 @@ export async function buildWorker(opts?: {
 }
 
 async function main(): Promise<void> {
+  const cfg = loadConfig();
+  const telemetry = initTelemetry({
+    exporter: cfg.OTEL_TRACES_EXPORTER,
+    endpoint: cfg.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
+    serviceName: 'repopilot-worker',
+  });
   const log = createLogger({ name: 'repopilot-worker' });
   const handle = await buildWorker({ log });
 
@@ -157,6 +164,7 @@ async function main(): Promise<void> {
     clearInterval(heartbeat);
     try {
       await handle.shutdown();
+      await telemetry.shutdown();
       process.exit(0);
     } catch (err) {
       log.error({ err: (err as Error).message }, 'shutdown failed');

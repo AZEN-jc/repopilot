@@ -19,6 +19,7 @@ import {
 } from './security/history-scanner.js';
 import type { Finding, HistoryScan, Report } from './schemas/report.js';
 import { DEFAULT_LIMITS } from './utils/constants.js';
+import { withSpan } from './telemetry.js';
 import type { Logger } from 'pino';
 
 /**
@@ -106,17 +107,43 @@ export class AuditPipeline {
     };
   }
 
+  /**
+   * One audit, as one trace.
+   *
+   * The stages below are child spans rather than log lines because the
+   * question a slow audit asks is "which stage", and the answer has to be
+   * readable without correlating timestamps across three log files. The
+   * pipeline span also carries the inputs, so a trace can be found by repo.
+   */
   async run(input: PipelineInput): Promise<PipelineResult> {
+    return withSpan(
+      'audit.pipeline',
+      {
+        'repopilot.repo_url': input.repoUrl,
+        'repopilot.mode': input.mode,
+        'repopilot.target': input.target,
+      },
+      async (span) => {
+        const result = await this.execute(input);
+        span.setAttribute('repopilot.degraded', result.degraded);
+        span.setAttribute('repopilot.truncated', result.truncated);
+        return result;
+      },
+    );
+  }
+
+  private async execute(input: PipelineInput): Promise<PipelineResult> {
     const parsed = parseRepoUrl(input.repoUrl, this.opts.allowedHosts);
+    const repoAttrs = { 'repopilot.owner': parsed.owner, 'repopilot.repo': parsed.repo };
     const metadataAnalyzer =
       this.opts.metadataAnalyzer ?? new MetadataAnalyzer({ token: this.opts.githubToken });
-    const metadata: RepoMetadata = await metadataAnalyzer.fetch(parsed.owner, parsed.repo);
+    const metadata: RepoMetadata = await withSpan('audit.metadata', repoAttrs, () =>
+      metadataAnalyzer.fetch(parsed.owner, parsed.repo),
+    );
 
     const fetcher = this.opts.fetcher ?? new GitHubFetcher(this.opts.githubToken);
-    const { entries, truncated } = await fetcher.fetchTree(
-      parsed.owner,
-      parsed.repo,
-      metadata.defaultBranch
+    const { entries, truncated } = await withSpan('audit.tree', repoAttrs, () =>
+      fetcher.fetchTree(parsed.owner, parsed.repo, metadata.defaultBranch),
     );
 
     const { included, skipped } = filterFiles(entries, {
@@ -128,16 +155,25 @@ export class AuditPipeline {
     // `degraded` says the archive could not be read and the request-per-file
     // path ran instead — the state where the anonymous hourly budget still
     // applies, and therefore the one a caller needs to know about.
-    const { contents, degraded } = await fetcher.fetchRepositoryContents(
-      parsed.owner,
-      parsed.repo,
-      metadata.defaultBranch,
-      included,
-      {
-        maxFileBytes: this.opts.maxFileBytes,
-        maxTotalBytes: this.opts.maxTotalBytes,
-        log: (msg, meta) => this.opts.log?.debug({ msg, ...meta }, 'fetcher'),
-      }
+    const { contents, degraded } = await withSpan(
+      'audit.contents',
+      repoAttrs,
+      async (span) => {
+        const result = await fetcher.fetchRepositoryContents(
+          parsed.owner,
+          parsed.repo,
+          metadata.defaultBranch,
+          included,
+          {
+            maxFileBytes: this.opts.maxFileBytes,
+            maxTotalBytes: this.opts.maxTotalBytes,
+            log: (msg, meta) => this.opts.log?.debug({ msg, ...meta }, 'fetcher'),
+          }
+        );
+        span.setAttribute('repopilot.files.read', result.contents.size);
+        span.setAttribute('repopilot.degraded', result.degraded);
+        return result;
+      },
     );
 
     // Wanted paths that came back with no content. Both paths drop these
@@ -159,27 +195,34 @@ export class AuditPipeline {
       (s) => s.reason === 'exceeds-max-file-bytes' || s.reason === 'exceeds-max-files'
     ).length;
 
-    const history = await this.scanHistory(fetcher, parsed.owner, parsed.repo, input.mode);
+    const history = await withSpan('audit.history', repoAttrs, async (span) => {
+      const result = await this.scanHistory(fetcher, parsed.owner, parsed.repo, input.mode);
+      span.setAttribute('repopilot.history.scanned', result.scan.scannedCommits);
+      span.setAttribute('repopilot.history.complete', result.scan.complete);
+      return result;
+    });
 
     const builder = new ReportBuilder();
-    const { report, truncated: reportTruncated } = builder.build({
-      metadata,
-      entries: included as FileEntry[],
-      // The unfiltered tree. `included` has had binaries removed, so any
-      // "does this exist" check that reads it cannot see an image.
-      allPaths: entries.map((e) => e.path),
-      contents,
-      truncated,
-      auditMode: input.mode,
-      target: input.target,
-      outputLanguage: input.outputLanguage,
-      includeLaunchCopy: input.includeLaunchCopy,
-      historyFindings: history.findings,
-      historyScan: history.scan,
-      degraded,
-      contentSkipped,
-      unreadableBeforeFetch,
-    });
+    const { report, truncated: reportTruncated } = await withSpan('audit.report', repoAttrs, () =>
+      builder.build({
+        metadata,
+        entries: included as FileEntry[],
+        // The unfiltered tree. `included` has had binaries removed, so any
+        // "does this exist" check that reads it cannot see an image.
+        allPaths: entries.map((e) => e.path),
+        contents,
+        truncated,
+        auditMode: input.mode,
+        target: input.target,
+        outputLanguage: input.outputLanguage,
+        includeLaunchCopy: input.includeLaunchCopy,
+        historyFindings: history.findings,
+        historyScan: history.scan,
+        degraded,
+        contentSkipped,
+        unreadableBeforeFetch,
+      }),
+    );
 
     return { report, truncated: reportTruncated, degraded };
   }
