@@ -268,9 +268,18 @@ Tracked work, in priority order, updated as items are completed.
   than a silent downgrade. The limiter's allow-list matches the generated key,
   so a key-bearing request from a trusted address is limited rather than
   exempt. D-048, R-81.
-- [ ] **Dead-Letter UI** for permanently failed jobs (intentionally
-  not in rc.2; `jobs.error` and `jobs.error_code` already capture
-  the reason)
+- [x] **Dead-Letter UI** for permanently failed jobs. Done 2026-10-24, as the
+  failure column in the per-repository history rather than a separate page. The
+  reason was already stored (`jobs.error`, `jobs.error_code`) and never shown:
+  the history said `failed` and stopped, so the reader needed the job id to ask
+  a second endpoint why. The summary now carries both fields — null for
+  anything that did not fail — and the row renders the classification as a pill
+  that opens the sentence underneath. A cross-repo operator page was rejected
+  because there is no operator credential to protect it: D-048's keys identify
+  callers and have no scopes, so that page would either expose every
+  repository's failures or require inventing a scope model to satisfy a UI
+  item. The response also stopped being documented as `{ type: 'object' }` —
+  the last placeholder D-046 had left in the contract. D-049.
 
 ## P2 — backlog
 

@@ -84,6 +84,7 @@ Architecture Decision Records (ADR-style, lightweight).
 - [D-046](#d-046--generate-the-shapes-hand-write-the-sentences)
 - [D-047](#d-047--traces-are-off-until-someone-asks-and-the-queue-carries-the-context)
 - [D-048](#d-048--a-key-identifies-a-caller-it-does-not-authorise-a-payment)
+- [D-049](#d-049--dead-letters-belong-in-the-repositorys-history-not-behind-an-admin-page)
   — A transport that adds a socket adds a payment decision
 
 ---
@@ -2858,3 +2859,55 @@ the limiter to work.
 
 **Related.** `BACKLOG.md` (item closed 2026-10-24), R-81, R-24 (the address
 keying this extends).
+
+## D-049 — Dead letters belong in the repository's history, not behind an admin page
+
+The backlog item was "Dead-Letter UI for permanently failed jobs", deferred
+from rc.2 on the grounds that `jobs.error` and `jobs.error_code` already
+capture the reason. They do — but nothing surfaced them: the per-repository
+history listed `status: "failed"` and stopped, so the reader had to already
+know the job id to ask a second endpoint why.
+
+**Decision.** Put the reason where the question is asked: on the history row
+for that repository.
+
+1. **`GET /api/v1/repositories/:owner/:repo/audits` carries `errorCode` and
+   `error`.** They are the same pair the job endpoint returns, and they are
+   null for anything that did not fail. No new exposure: the history response
+   already returns the `jobId`, and the job endpoint is public to anyone who
+   has one.
+2. **The row is the control.** A failed row renders `errorCode` as a pill;
+   clicking it opens the sentence underneath. One at a time — ten expanded
+   failures is a wall of text, and the question is about one of them.
+3. **The response got a real schema.** It was documented as
+   `{ type: 'object' }`, the last placeholder in a contract that D-046 had
+   otherwise generated. A response shape nothing describes is the defect
+   D-046 removed, one endpoint over.
+
+**Why not a separate page.** A cross-repository list of failed audits is an
+operator surface, and there is no operator credential: D-048's keys identify
+callers, and they have no scopes. Shipping the page would mean either
+exposing every repository's failures to any caller, or inventing a scope
+model in the same change — a security decision taken to satisfy a UI item.
+The per-repo history already has a scope everyone agrees on, and it is where
+someone who just ran an audit looks.
+
+**Alternatives rejected.**
+
+- **A global `/api/v1/admin/dead-letters` plus a page.** Needs the scope model
+  above; also duplicates data the history endpoint already serves.
+- **A dedicated CLI command.** Closer to the operator's actual need, and
+  still not a UI — and an operator with database access can already
+  `SELECT … WHERE status = 'failed'`. The useful part was the reason being
+  visible where the audit is, not another command.
+- **A "retry" button on the row.** A retry is a new paid audit; the product
+  has no free re-run and inventing one here would change the pricing model to
+  satisfy a UI item. The history already links the row to the job, and the
+  report view has the re-audit path.
+
+**What this does not do.** No cross-repo triage, no retry, no aggregation by
+error code. Those need the operator surface, and the operator surface needs a
+credential that says "operator".
+
+**Related.** `BACKLOG.md` (item closed 2026-10-24), D-046 (the contract
+placeholder this closes), D-048 (the keys that do not yet have scopes).

@@ -140,6 +140,7 @@ const en = {
   historyFindings: 'Findings',
   historyCurrent: 'current',
   historyCompare: 'Compare',
+  historyFailure: 'Reason',
 };
 
 export type Dict = typeof en;
@@ -266,6 +267,7 @@ const zhCN: Dict = {
   historyFindings: '发现项',
   historyCurrent: '当前',
   historyCompare: '对比',
+  historyFailure: '原因',
 };
 
 const DICTS: Record<UiLanguage, Dict> = { en, 'zh-CN': zhCN };

@@ -622,11 +622,21 @@ only; fetch a full report with `GET /api/v1/audits/:jobId`.
       "completedAt": "2026-09-20T10:30:09.000Z",
       "failedAt": null,
       "overall": 62.8,
-      "findingCount": 10
+      "findingCount": 10,
+      "errorCode": null,
+      "error": null
     }
   ]
 }
 ```
+
+`errorCode` and `error` are populated only for a `failed` audit: the
+classification the worker assigned (`UPSTREAM_RATE_LIMITED`, `JOB_TIMEOUT`, …)
+and the fixed sentence the API serves for it. They are the same pair
+`GET /api/v1/audits/:jobId` returns, carried on the summary so a failed row can
+say why without a second request — a history that answers "did it fail" and
+sends the reader elsewhere for "why" is a dead end when the reader does not
+already have the id.
 
 Audits recorded before the repository-identity columns existed carry
 `NULL` owner/repo and are **excluded** from history rather than being

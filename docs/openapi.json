@@ -615,7 +615,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/RepoAuditHistory"
                 }
               }
             }
@@ -1530,6 +1530,124 @@
         },
         "required": [
           "error"
+        ]
+      },
+      "RepoAuditHistory": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "count": {
+            "type": "number"
+          },
+          "audits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "processing",
+                    "completed",
+                    "failed"
+                  ]
+                },
+                "commitSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "quick",
+                    "full"
+                  ]
+                },
+                "target": {
+                  "type": "string",
+                  "enum": [
+                    "hackathon",
+                    "open_source",
+                    "production"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "completedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "failedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "overall": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "findingCount": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "errorCode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "jobId",
+                "status",
+                "commitSha",
+                "mode",
+                "target",
+                "createdAt",
+                "completedAt",
+                "failedAt",
+                "overall",
+                "findingCount",
+                "errorCode",
+                "error"
+              ]
+            }
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "limit",
+          "count",
+          "audits"
         ]
       }
     }

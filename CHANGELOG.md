@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Failure reasons in the audit history.** `GET
+  /api/v1/repositories/:owner/:repo/audits` now carries `errorCode` and
+  `error` on each summary (null unless the audit failed), and the web history
+  renders a failed row's classification as a pill that opens the sentence the
+  API serves for it. Before this, history said `failed` and stopped, so the
+  reason was only reachable by someone who already had the job id. The
+  endpoint's response is also properly described in the OpenAPI document now,
+  instead of `{ type: 'object' }`. See D-049.
+
 - **API keys, and rate limiting that follows them.** `pnpm api-key
   create|list|revoke` issues, lists and revokes keys against the deployment's
   database; only the SHA-256 is stored and the plaintext is printed once.

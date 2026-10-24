@@ -485,11 +485,7 @@ export function buildOpenApiSpec(): Record<string, unknown> {
           responses: {
             '200': {
               description: 'Audit summaries for the repository.',
-              content: {
-                'application/json': {
-                  schema: { type: 'object' },
-                },
-              },
+              content: jsonBody('RepoAuditHistory'),
             },
           },
         },

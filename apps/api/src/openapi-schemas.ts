@@ -229,6 +229,38 @@ export const OpenApiDocumentSchema = z
  * under. `openapi.test.ts` fails on an entry nothing references, so this is a
  * contract and not a catalogue.
  */
+/**
+ * The per-repository history summary.
+ *
+ * It used to be documented as `{ type: 'object' }` — a placeholder, which is
+ * the same defect D-046 removed from the other components: a response shape
+ * nothing describes. `errorCode` and `error` are new here because a failed
+ * audit is only useful if the reason travels with the summary; both are the
+ * same strings `GET /api/v1/audits/{jobId}` already returns for that id.
+ */
+export const RepoAuditHistoryEntrySchema = z.object({
+  jobId: z.string(),
+  status: JobStatusSchema,
+  commitSha: z.string().nullable(),
+  mode: z.enum(['quick', 'full']),
+  target: z.enum(['hackathon', 'open_source', 'production']),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+  failedAt: z.string().nullable(),
+  overall: z.number().nullable(),
+  findingCount: z.number().nullable(),
+  errorCode: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
+export const RepoAuditHistorySchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  limit: z.number(),
+  count: z.number(),
+  audits: z.array(RepoAuditHistoryEntrySchema),
+});
+
 export const SPEC_SCHEMAS = {
   RootResponse: RootResponseSchema,
   HealthResponse: HealthResponseSchema,
@@ -244,6 +276,7 @@ export const SPEC_SCHEMAS = {
   PaymentChallenge: PaymentChallengeResponseSchema,
   EnqueueFailedResponse: EnqueueFailedResponseSchema,
   ErrorResponse: ErrorResponseSchema,
+  RepoAuditHistory: RepoAuditHistorySchema,
 } as const;
 
 export type SpecSchemaName = keyof typeof SPEC_SCHEMAS;

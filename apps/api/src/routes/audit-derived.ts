@@ -225,6 +225,11 @@ export function registerAuditDerivedRoutes(app: FastifyInstance, deps: AuditDeri
           failedAt: job.failedAt,
           overall: overallOf(job.report),
           findingCount: findingCountOf(job.report),
+          // Why it failed, on the row that says it failed. Without these the
+          // history answers "did it fail" and sends the reader to another
+          // endpoint to learn "why" — for a job they may not have the id of.
+          errorCode: job.errorCode,
+          error: job.error,
         })),
       });
     }

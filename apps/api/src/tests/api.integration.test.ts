@@ -285,8 +285,11 @@ interface AuditHistoryBody {
     target: string;
     createdAt: string;
     completedAt: string | null;
+    failedAt: string | null;
     overall: number | null;
     findingCount: number | null;
+    errorCode: string | null;
+    error: string | null;
   }[];
 }
 
@@ -1119,6 +1122,44 @@ describe('API integration', () => {
         expect(entry.overall).toBeNull();
         expect(entry.findingCount).toBeNull();
         expect(entry.completedAt).toBeNull();
+      });
+
+      it('carries the reason on a failed summary', async () => {
+        // A history row that says "failed" and stops is a dead end: the reader
+        // has to already know the job id to ask the job endpoint why. The
+        // summary carries the same pair, so the reason travels with the row.
+        const repoUrl = 'https://github.com/okx/history-failure';
+        pipeline.failOn(repoUrl, 'PIPELINE_FAILED', 'the pipeline could not finish');
+
+        const create = await app.inject({
+          method: 'POST',
+          url: '/api/v1/audits',
+          payload: { repoUrl, mode: 'quick' },
+        });
+        const { jobId, payment } = create.json() as { jobId: string; payment: { paymentId: string } };
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/audits',
+          headers: { 'x-payment': `mock:${payment.paymentId}` },
+          payload: { repoUrl, mode: 'quick' },
+        });
+
+        let entry: AuditHistoryBody['audits'][number] | undefined;
+        for (let i = 0; i < 50; i += 1) {
+          const res = await app.inject({
+            method: 'GET',
+            url: '/api/v1/repositories/okx/history-failure/audits',
+          });
+          const body = res.json() as AuditHistoryBody;
+          entry = body.audits.find((a) => a.jobId === jobId);
+          if (entry?.status === 'failed') break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+
+        expect(entry?.status).toBe('failed');
+        expect(entry?.errorCode?.length).toBeGreaterThan(0);
+        expect(entry?.error?.length).toBeGreaterThan(0);
+        expect(entry?.failedAt).not.toBeNull();
       });
 
       it('clamps the limit instead of trusting it', async () => {

@@ -217,6 +217,15 @@ export interface AuditHistoryEntry {
   failedAt: string | null;
   overall: number | null;
   findingCount: number | null;
+  /**
+   * Present for a failed audit. `errorCode` is the worker's classification
+   * (`UPSTREAM_RATE_LIMITED`, `JOB_TIMEOUT`, …) and `error` is the fixed
+   * sentence the API serves for it — the same pair `GET /audits/{jobId}`
+   * returns, carried on the summary so history can say why without a second
+   * request.
+   */
+  errorCode: string | null;
+  error: string | null;
 }
 
 export interface AuditHistory {

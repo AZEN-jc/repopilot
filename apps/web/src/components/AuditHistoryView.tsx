@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { listRepoAudits, type AuditHistory } from '../lib/api.js';
 import { scoreClass, shortSha, when } from '../lib/format.js';
 import { useI18n } from '../i18n.js';
@@ -18,6 +18,12 @@ export function AuditHistoryView({
   const [history, setHistory] = useState<AuditHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  /**
+   * The failed row whose reason is open. One at a time: a history with ten
+   * failures and every reason expanded is a wall of text, and the question is
+   * always about one of them.
+   */
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,31 +92,60 @@ export function AuditHistoryView({
               {history.audits.map((entry) => {
                 const isCurrent = entry.jobId === currentJobId;
                 const comparable = entry.status === 'completed' && entry.overall !== null && !isCurrent;
+                const failed = entry.status === 'failed';
+                const open = failed && openFailure === entry.jobId;
                 return (
-                  <tr key={entry.jobId}>
-                    <td>{when(entry.createdAt)}</td>
-                    <td><code>{shortSha(entry.commitSha)}</code></td>
-                    <td className="meta">{entry.mode} · {entry.target}</td>
-                    <td className="num">
-                      {entry.overall === null ? (
-                        <span className="meta">—</span>
-                      ) : (
-                        <span className={`pill ${scoreClass(entry.overall)}`}>{entry.overall}</span>
-                      )}
-                    </td>
-                    <td className="num">{entry.findingCount ?? '—'}</td>
-                    <td>
-                      {isCurrent ? (
-                        <span className="meta">{t.historyCurrent}</span>
-                      ) : comparable ? (
-                        <button className="secondary" onClick={() => onCompare(entry.jobId)}>
-                          {t.historyCompare}
-                        </button>
-                      ) : (
-                        <span className="meta">{entry.status}</span>
-                      )}
-                    </td>
-                  </tr>
+                  <Fragment key={entry.jobId}>
+                    <tr>
+                      <td>{when(entry.createdAt)}</td>
+                      <td><code>{shortSha(entry.commitSha)}</code></td>
+                      <td className="meta">{entry.mode} · {entry.target}</td>
+                      <td className="num">
+                        {entry.overall === null ? (
+                          <span className="meta">—</span>
+                        ) : (
+                          <span className={`pill ${scoreClass(entry.overall)}`}>{entry.overall}</span>
+                        )}
+                      </td>
+                      <td className="num">{entry.findingCount ?? '—'}</td>
+                      <td>
+                        {isCurrent ? (
+                          <span className="meta">{t.historyCurrent}</span>
+                        ) : comparable ? (
+                          <button className="secondary" onClick={() => onCompare(entry.jobId)}>
+                            {t.historyCompare}
+                          </button>
+                        ) : failed ? (
+                          /*
+                           * A failed audit is the one row that has something
+                           * more to say, and the reason is already in the
+                           * summary. The pill is the toggle: `errorCode` is
+                           * the classification, which is short enough to sit
+                           * in the column, and the sentence opens below.
+                           */
+                          <button
+                            type="button"
+                            className="pill bad"
+                            aria-expanded={open}
+                            title={entry.error ?? undefined}
+                            onClick={() => setOpenFailure(open ? null : entry.jobId)}
+                          >
+                            {entry.errorCode ?? entry.status}
+                          </button>
+                        ) : (
+                          <span className="meta">{entry.status}</span>
+                        )}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="failure-row">
+                        <td colSpan={6}>
+                          <span className="meta">{t.historyFailure}: </span>
+                          {entry.error ?? '—'}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

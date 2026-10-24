@@ -334,6 +334,15 @@ button:disabled {
 .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
 .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+/* A failed history row opens its reason here. The row above already carries
+   the padding, so this one only needs the gap and a rule to close it. */
+.failure-row td {
+  padding-top: 0;
+  padding-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
 
 /*
  * The overall score.
