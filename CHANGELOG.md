@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Markdown export of a report.** `GET /api/v1/audits/:jobId/markdown`
+  renders a completed audit as a Markdown document, for pasting into a pull
+  request, a ticket or a release note. Free, like every derived route. A path
+  rather than content negotiation: `Accept: text/markdown` on the job route
+  would answer 200 with the wrong body when a client asks for the wrong thing.
+  The renderer is `reportToMarkdown` in `@repopilot/core` — the MCP server
+  renders the same reports, so a second copy in the API would drift.
+
 - **A test runner for `scripts/`.** The root is not a workspace package, so
   `pnpm -r test` never looked at the repository's own gates and a `*.test.ts`
   beside one was a test nothing ran — the fact behind R-31's six months of

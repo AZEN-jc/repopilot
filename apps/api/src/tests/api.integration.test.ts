@@ -272,6 +272,12 @@ interface AuditDiffBody {
   verdict: string;
 }
 
+/** The shape the export assertions read back out of the job endpoint. */
+interface Finding {
+  title: string;
+  evidence: Array<{ file: string; line: number | null }>;
+}
+
 interface AuditHistoryBody {
   owner: string;
   repo: string;
@@ -946,6 +952,90 @@ describe('API integration', () => {
 
       it('404 for an unknown job', async () => {
         const res = await app.inject({ method: 'GET', url: '/api/v1/audits/job_missing/fix-plan' });
+        expect(res.statusCode).toBe(404);
+        expect((res.json() as { error: { code: string } }).error.code).toBe('JOB_NOT_FOUND');
+      });
+    });
+
+    // ------------------------------------------------------------------
+    // markdown export
+    // ------------------------------------------------------------------
+
+    describe('GET /api/v1/audits/:jobId/markdown', () => {
+      it('renders the stored report as Markdown', async () => {
+        // The blocked fixture, so the export has a blocker to render: the
+        // clean one exercises the header and the score table and nothing
+        // else, and it is the blocker's coordinate that is the point.
+        pipeline.setReport(BLOCKED_REPO, blockedReport());
+        const jobId = await runAudit(app, BLOCKED_REPO);
+        const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}/markdown` });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['content-type']).toContain('text/markdown');
+        const body = res.body;
+
+        // The number in the export is the number in the report, read back
+        // from the JSON endpoint rather than hardcoded: a renderer that
+        // recomputed a score would pass a literal and fail here.
+        const jobRes = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}` });
+        const report = (
+          jobRes.json() as {
+            report: {
+              scores: { overall: number };
+              blockers: Finding[];
+              documentationGaps: Finding[];
+              securityFindings: Finding[];
+            };
+          }
+        ).report;
+        expect(body).toContain(`| overall | ${report.scores.overall} |`);
+
+        // Whichever group the fixture populated: the heading carries the
+        // report's own count, and the first finding's title and coordinate
+        // come from the report rather than from a literal here.
+        // Typed as a tuple array rather than filtered with a predicate: the
+        // predicate's `entry` is `string | Finding[]`, so `entry[1]` is
+        // possibly undefined and the narrowing has to happen at the literal.
+        const allGroups: Array<[string, Finding[]]> = [
+          ['Blockers', report.blockers],
+          ['Documentation gaps', report.documentationGaps],
+          ['Security findings', report.securityFindings],
+        ];
+        const groups = allGroups.filter((entry) => entry[1].length > 0);
+        expect(groups.length).toBeGreaterThan(0);
+
+        const [label, findings] = groups[0]!;
+        const finding = findings[0]!;
+        expect(body).toContain(`### ${label} (${findings.length})`);
+        expect(body).toContain(`#### ${finding.title}`);
+        // The coordinate, which is the whole point of an export.
+        const evidence = finding.evidence[0]!;
+        const where =
+          evidence.line === null ? evidence.file : `${evidence.file}:${evidence.line}`;
+        expect(body).toContain(`- \`${where}\``);
+      });
+
+      it('never asks for payment, like every other derived route', async () => {
+        const jobId = await runAudit(app, CLEAN_REPO);
+        const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}/markdown` });
+        expect(res.statusCode).not.toBe(402);
+      });
+
+      it('409 when the audit has no report yet', async () => {
+        const create = await app.inject({
+          method: 'POST',
+          url: '/api/v1/audits',
+          payload: { repoUrl: CLEAN_REPO, mode: 'quick' },
+        });
+        const { jobId } = create.json() as { jobId: string };
+
+        const res = await app.inject({ method: 'GET', url: `/api/v1/audits/${jobId}/markdown` });
+        expect(res.statusCode).toBe(409);
+        expect((res.json() as { error: { code: string } }).error.code).toBe('REPORT_NOT_READY');
+      });
+
+      it('404 for an unknown job', async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/v1/audits/job_missing/markdown' });
         expect(res.statusCode).toBe(404);
         expect((res.json() as { error: { code: string } }).error.code).toBe('JOB_NOT_FOUND');
       });

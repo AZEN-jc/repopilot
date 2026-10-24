@@ -343,7 +343,20 @@ Tracked work, in priority order, updated as items are completed.
   `document.documentElement.lang`. There is no third dictionary and no
   message-format library, which is the right size for one page. Closing as
   stale rather than done-by-this-change, because nothing here shipped it.
-- [ ] Markdown export of report
+- [x] **Markdown export of report.** Done 2026-10-24, as
+  `GET /api/v1/audits/:jobId/markdown` — a path rather than
+  `Accept: text/markdown` on the job route, because content negotiation on a
+  JSON endpoint answers 200 with the wrong body when a client asks for the
+  wrong thing, and the OpenAPI document would have to describe two response
+  bodies for one operation. Free, like every derived route: the report was
+  already paid for and this only changes its shape. The renderer lives in
+  `core` (`reportToMarkdown`) because the MCP server renders the same reports
+  and a second copy would drift. Three rules it follows: every number comes
+  from the report, prose a rule author wrote is escaped so it cannot break the
+  layout, and an empty section is omitted rather than printed as "none" —
+  `omittedSections` is printed as a sentence instead, because a `quick` report
+  has no deployment plan by declaration and a heading over nothing reads as a
+  claim that nothing was found.
 - [ ] PDF export of report
 - [ ] VSCode extension embedding MCP server
 - [ ] Re-pop analysis (compare current vs previous commit)

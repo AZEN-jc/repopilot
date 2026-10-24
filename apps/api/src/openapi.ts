@@ -85,6 +85,18 @@ function jsonBody(name: SpecSchemaName): Record<string, unknown> {
   return { 'application/json': { schema: ref(name) } };
 }
 
+/**
+ * A body that is not JSON.
+ *
+ * OpenAPI 3.1 has no schema language for prose, so `type: 'string'` is the
+ * honest description: the document says what the content type is and leaves
+ * the shape to the endpoint's own documentation. A generator asked for a
+ * schema here would invent one.
+ */
+function textBody(contentType: string): Record<string, unknown> {
+  return { [contentType]: { schema: { type: 'string' } } };
+}
+
 export function buildOpenApiSpec(): Record<string, unknown> {
   return {
     openapi: '3.1.0',
@@ -486,6 +498,34 @@ export function buildOpenApiSpec(): Record<string, unknown> {
             '200': {
               description: 'Audit summaries for the repository.',
               content: jsonBody('RepoAuditHistory'),
+            },
+          },
+        },
+      },
+      '/api/v1/audits/{jobId}/markdown': {
+        get: {
+          tags: ['derived'],
+          summary: 'A completed audit as a Markdown document',
+          description:
+            'The same report GET /api/v1/audits/{jobId} returns, rendered as Markdown by `reportToMarkdown` in @repopilot/core. Free, like every derived route: the report was already paid for and this only changes its shape. 404 for an unknown job, 409 for one that has not completed.',
+          operationId: 'getAuditMarkdown',
+          parameters: [
+            {
+              name: 'jobId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'The report as Markdown.',
+              content: textBody('text/markdown'),
+            },
+            '404': { description: 'No such job.', content: jsonBody('ErrorResponse') },
+            '409': {
+              description: 'The job has not completed; there is no report to render.',
+              content: jsonBody('ErrorResponse'),
             },
           },
         },

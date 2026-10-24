@@ -15,6 +15,7 @@ Base URL: `http://localhost:4000` (default). All routes are under
 - [`GET /api/v1/audits/:jobId/diff`](#get-apiv1auditsjobiddiffbasejobid)
 - [`GET /api/v1/repositories/:owner/:repo/audits`](#get-apiv1repositoriesownerrepoauditslimit)
 - [`GET /api/v1/audits/:jobId/quality`](#get-apiv1auditsjobidquality)
+- [`GET /api/v1/audits/:jobId/markdown`](#get-apiv1auditsjobidmarkdown)
 - [`POST /api/v1/repositories/:owner/:repo/reaudit`](#post-apiv1repositoriesownerreporeaudit)
 - [`GET /docs/openapi.json`](#get-docsopenapijson)
 - [Rate limits](#rate-limits)
@@ -715,6 +716,63 @@ one.
 
 **Errors** — `404 JOB_NOT_FOUND` for an unknown job, `409
 REPORT_NOT_READY` when the audit has not completed.
+
+## `GET /api/v1/audits/:jobId/markdown`
+
+The same report `GET /api/v1/audits/:jobId` returns, rendered as a Markdown
+document by `reportToMarkdown` in `@repopilot/core`. **Free** — the report was
+already paid for, and this only changes its shape.
+
+`404` for an unknown job, `409` for one that has not completed.
+
+**Response `200`** — `content-type: text/markdown; charset=utf-8`
+
+```markdown
+# okx/repopilot — release audit
+
+> No blockers. Two documentation gaps and one security finding.
+
+- report contract: `v1.5`
+- mode: `full` · target: `production`
+- generated: 2026-10-24T10:30:00.000Z
+
+### Scores
+
+| dimension | score |
+| --- | --- |
+| overall | 61 |
+| documentation | 54 |
+| reproducibility | 72 |
+| security hygiene | 58 |
+| deployment readiness | 66 |
+
+### Security findings (1)
+
+#### Live credential committed to source
+
+- severity: `critical`
+- rule: `SEC-SECRET-001`
+
+An assignment to `apiKey` in src/config.ts looks like a real key.
+
+Evidence:
+
+- `src/config.ts:12` — high-entropy string assigned to apiKey
+
+Fix: Rotate the credential, then read it from the environment.
+```
+
+Three properties of the rendering worth knowing before you paste it somewhere:
+
+- **Every number comes from the report.** Nothing is recomputed or rounded, so
+  the export and the JSON cannot disagree.
+- **Prose a rule author wrote is escaped.** A `#` at the start of a finding
+  title does not become a heading; paths are in code spans, where they are
+  literal.
+- **An empty section is omitted, not printed as "none".** A `quick` report has
+  no deployment plan by declaration, and a heading over nothing reads as a
+  claim that nothing was found — so `omittedSections` is printed as a sentence
+  instead.
 
 ## `POST /api/v1/repositories/:owner/:repo/reaudit`
 

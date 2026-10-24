@@ -7,6 +7,7 @@
  *   GET /api/v1/audits/:jobId/fix-plan          Report -> FixPlanSet
  *   GET /api/v1/audits/:jobId/diff?base=<jobId> Report + Report -> AuditDiff
  *   GET /api/v1/audits/:jobId/quality           Report -> QualityContractResult
+ *   GET /api/v1/audits/:jobId/markdown          Report -> text/markdown
  *   GET /api/v1/repositories/:owner/:repo/audits                 history list
  *
  * Two invariants hold for everything in this file:
@@ -22,6 +23,7 @@ import {
   buildFixPlanSet,
   diffReports,
   evaluateQualityContract,
+  reportToMarkdown,
   type AuditJob,
   type Report,
 } from '@repopilot/core';
@@ -104,6 +106,30 @@ export function registerAuditDerivedRoutes(app: FastifyInstance, deps: AuditDeri
       const report = requireReport(job, reply, req.params.jobId);
       if (!report) return reply;
       return reply.send(buildFixPlanSet(report, { commitSha: job?.commitSha ?? null }));
+    }
+  );
+
+  /**
+   * The same report as a Markdown document.
+   *
+   * A separate route rather than `Accept: text/markdown` on the job route:
+   * content negotiation on a JSON endpoint means a client that asks for the
+   * wrong thing gets a 200 with the wrong body, and the OpenAPI document
+   * would have to describe two response bodies for one operation. A path is
+   * unambiguous, and it is what a browser or `curl -O` can name.
+   *
+   * Free, like every other route in this file — the report was already paid
+   * for, and this only changes its shape.
+   */
+  app.get<{ Params: { jobId: string } }>(
+    '/api/v1/audits/:jobId/markdown',
+    async (req, reply) => {
+      const job = await deps.service.get(req.params.jobId);
+      const report = requireReport(job, reply, req.params.jobId);
+      if (!report) return reply;
+      return reply
+        .type('text/markdown; charset=utf-8')
+        .send(reportToMarkdown(report));
     }
   );
 
