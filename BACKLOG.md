@@ -413,8 +413,21 @@ Tracked work, in priority order, updated as items are completed.
   going to catch it. Running a block needs a live service and is out of reach;
   comparing a documented response body against the route's own JSON schema is
   not, and that is the half worth building.
-- [ ] **The MCP `capabilities` tool reports its own limits, and an agent may
-  read them as the service's.** `packages/mcp-server/src/index.ts` publishes
+- [x] **The MCP `capabilities` tool reported its own limits under the key the
+  HTTP API uses, and an agent could read them as the service's.** Done
+  2026-10-24, by picking the third of the three recorded answers: the key is
+  renamed. `get_repopilot_capabilities` now publishes `processLimits` rather
+  than `limits` — the HTTP API keeps `limits` for its own numbers, so a client
+  that mapped the two surfaces one-to-one now fails to find the key instead of
+  finding the wrong number. The description had warned about this since it was
+  written, and a description is prose an agent skims; a key is the contract an
+  agent reads. The numbers are unchanged and still true of this process (it
+  builds `AuditPipeline` without overriding the library defaults). The other
+  two answers were rejected: reading `GET /api/v1/capabilities` from a
+  configured base URL makes the MCP server fail when the API is unreachable,
+  which is the normal case for a stdio client; dropping the block loses an
+  answer to a real question ("how big can this server read"). The original
+  item's remaining half is unchanged: `packages/mcp-server/src/index.ts` publishes
   `DEFAULT_LIMITS`, which is the correct answer for that process — it builds
   `AuditPipeline` without passing `maxFiles`/`maxFileBytes`/`maxTotalBytes`, so
   the library defaults are what it enforces. The defect is the one the HTTP

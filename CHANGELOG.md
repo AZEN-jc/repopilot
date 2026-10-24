@@ -1087,6 +1087,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The MCP `capabilities` tool publishes `processLimits`, not `limits`.**
+  The HTTP API reports the same four numbers under `limits`, and a caller that
+  read them from the MCP server to size a repository and then sent it to the
+  paid API was using another process's budget. The tool description has warned
+  about that since it was written; a description is prose an agent skims, so
+  the key is renamed and the mistake is impossible rather than documented. The
+  numbers are unchanged. `docs/MCP_CLIENT_SETUP.md` explains the two surfaces.
 - **Five duplicated implementations collapsed to one each.** None of these
   changes behaviour; a rule written twice is a rule that can disagree with
   itself, which is the defect the last entry of `### Added` records one

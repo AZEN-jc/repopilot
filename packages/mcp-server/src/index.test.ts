@@ -302,6 +302,30 @@ describe('the free check tool', () => {
   });
 });
 
+describe('get_repopilot_capabilities', () => {
+  it('reports this process limits under a key the HTTP API does not use', async () => {
+    // The whole point of `processLimits`: the HTTP API publishes the same
+    // numbers under `limits`, and a caller that read them from here and sent
+    // the repository to the paid API was sizing it with another process's
+    // budget. The key is the contract an agent reads; the description that
+    // warned about it was prose, and prose is skimmed.
+    const caps = await callTool<Record<string, unknown>>(
+      loaderOf(snapshotOf(SAMPLE)),
+      'get_repopilot_capabilities',
+    );
+
+    const processLimits = caps['processLimits'] as Record<string, number> | undefined;
+    expect(processLimits).toBeDefined();
+    expect(processLimits?.['maxFiles']).toBeGreaterThan(0);
+    // And the API's key is absent, so a one-to-one mapping of the two surfaces
+    // cannot quietly pick up the wrong number.
+    expect(caps['limits']).toBeUndefined();
+    // The blocks that describe this process stay.
+    expect(caps['paymentMode']).toBeDefined();
+    expect(caps['pricing']).toBeDefined();
+  });
+});
+
 describe('the intelligence tools', () => {
   it('answers get_repository_context from the repository itself', async () => {
     const context = await callTool<{

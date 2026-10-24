@@ -14,7 +14,7 @@
  *   - compare_audits: before/after with rule-level score attribution
  *   - list_audit_history: audits recorded for a repository this session
  *   - get_audit_status: poll a previously created job
- *   - get_repopilot_capabilities: inputs, outputs, limits, pricing, billing
+ *   - get_repopilot_capabilities: inputs, outputs, process limits, pricing, billing
  *
  *   Free, and they do read a repository (V0.2-g, ADR D-028):
  *   - free_check: five presence checks and a score, from the file names alone
@@ -580,10 +580,17 @@ export function buildMcpServer(opts: McpServerOptions): { server: McpServer; job
 
   server.tool(
     'get_repopilot_capabilities',
-    'Return RepoPilot capabilities: name, version, supported inputs/outputs, limits, pricing, and which tools are free or paid. `limits`, `pricing` and `paymentMode` describe this process, so they can differ from the deployed HTTP API; `endpoints` is empty and `cache.enabled` is false because this server speaks stdio JSON-RPC and holds no audit cache — read `GET /api/v1/capabilities` for the deployed route list.',
+    'Return RepoPilot capabilities: name, version, supported inputs/outputs, process limits, pricing, and which tools are free or paid. `processLimits`, `pricing` and `paymentMode` describe THIS process and can differ from the deployed HTTP API — the API reports the same numbers under `limits`, which is the point of the different key name; `endpoints` is empty and `cache.enabled` is false because this server speaks stdio JSON-RPC and holds no audit cache. Read `GET /api/v1/capabilities` for the deployed route list and its limits.',
     {},
     async () => {
-      const caps: Capabilities & { billing: typeof BILLING } = {
+      // `Omit<…, 'limits'>` and not `Capabilities`: this server reports its
+      // own numbers under `processLimits` (see the block below), so the shape
+      // deliberately diverges from the HTTP API's at exactly one key. The
+      // billing map is this process's addition either way.
+      const caps: Omit<Capabilities, 'limits'> & {
+        processLimits: Capabilities['limits'];
+        billing: typeof BILLING;
+      } = {
         name: 'RepoPilot',
         version: CORE_VERSION,
         inputs: {
@@ -613,7 +620,25 @@ export function buildMcpServer(opts: McpServerOptions): { server: McpServer; job
          * telling a client to call an HTTP route that does not exist.
          */
         endpoints: {},
-        limits: {
+        /**
+         * Named `processLimits`, and not `limits`, on purpose.
+         *
+         * The HTTP API's `/capabilities` has a `limits` block, and this is not
+         * it. A caller that reads this tool to size a repository and then
+         * sends it to the paid API is using numbers from a different process —
+         * the defect the tool description has been warning about since it was
+         * written, in prose an agent skims. A key is not prose: naming it
+         * `processLimits` makes the mistake impossible rather than merely
+         * documented, and a client that maps the two surfaces one-to-one now
+         * fails to find the key instead of finding the wrong number.
+         *
+         * The numbers are still true of this process — it builds
+         * `AuditPipeline` without overriding the library defaults, so
+         * `DEFAULT_LIMITS` is exactly what it enforces — and they are still
+         * reported, because "how big can this server read" is a real question
+         * with a real answer here.
+         */
+        processLimits: {
           maxFiles: DEFAULT_LIMITS.maxFiles,
           maxFileBytes: DEFAULT_LIMITS.maxFileBytes,
           maxTotalBytes: DEFAULT_LIMITS.maxTotalBytes,

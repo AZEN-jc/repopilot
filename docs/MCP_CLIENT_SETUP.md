@@ -574,14 +574,24 @@ Returns the same *shape* as `GET /api/v1/capabilities`, plus a `billing`
 map marking every tool free or paid. Two blocks are worth reading before
 you compare the two surfaces:
 
-- `limits`, `pricing` and `paymentMode` describe **this process**. They
-  are what the MCP server is configured with, which is not necessarily
-  what the deployed HTTP API enforces.
+- `processLimits`, `pricing` and `paymentMode` describe **this process**.
+  They are what the MCP server is configured with, which is not
+  necessarily what the deployed HTTP API enforces.
 - `endpoints` and `cache` describe the **HTTP service**. This server
   speaks stdio JSON-RPC, so it reports no routes and no cache: an agent
   that calls the paid tool twice on the same commit will run the pipeline
   twice here, whatever the API's cache does. Read the HTTP
   `/capabilities` for the deployed route list.
+
+**`processLimits` is not the API's `limits`, and the key name is the
+point.** The HTTP API publishes the same four numbers under `limits`. A
+caller that read them from here to size a repository and then sent it to
+the paid API was using another process's budget — the tool description has
+warned about that since it was written, and a description is prose an agent
+skims. The numbers are still true of this process and still reported; the
+key is renamed so the mistake is impossible rather than documented. A client
+that maps the two surfaces one-to-one now fails to find `limits` here
+instead of finding the wrong number.
 
 **Input**: none
 
@@ -593,7 +603,7 @@ you compare the two surfaces:
   "version": "0.1.0",
   "paymentMode": "mock",
   "endpoints": {},
-  "limits": { "...": "..." },
+  "processLimits": { "...": "..." },
   "pricing": { "...": "..." },
   "cache": {
     "enabled": false,
